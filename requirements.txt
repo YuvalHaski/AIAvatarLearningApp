@@ -3,3 +3,7 @@ uvicorn[standard]
 python-multipart
 openai
 python-dotenv
+
+# For Database connection
+sqlalchemy
+psycopg2-binary
