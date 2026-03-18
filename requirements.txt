@@ -7,3 +7,6 @@ python-dotenv
 # For Database connection
 sqlalchemy
 psycopg2-binary
+
+# For manages DB migrations
+alembic
