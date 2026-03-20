@@ -1,12 +1,10 @@
 from fastapi import FastAPI
 from dotenv import load_dotenv
-
-# Database imports
-from app.core.database import engine, Base
-from app.models import domain
+from fastapi.middleware.cors import CORSMiddleware
 
 # API Routers imports
-from app.api.routes import asr
+from app.api.routes import categories, progress, asr
+
 
 # Load environment variables
 load_dotenv()
@@ -18,7 +16,24 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Include our routers (Endpoints)
+# ==========================================
+# CORS CONFIGURATION
+# ==========================================
+# This allows external clients (like your web browser testing Swagger) to communicate with the API.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, replace "*" with specific domains
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ==========================================
+# ROUTERS INCLUSION
+# ==========================================
+# Here we attach all the endpoints we built to the main app
+app.include_router(categories.router)
+app.include_router(progress.router)
 app.include_router(asr.router, tags=["Audio & Speech"])
 
 # Optional: A simple health check endpoint at the root
