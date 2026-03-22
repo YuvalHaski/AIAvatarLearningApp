@@ -2,12 +2,28 @@ from fastapi import FastAPI
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 
+# Firebase SDK:
+import firebase_admin
+from firebase_admin import credentials
+
 # API Routers imports
 from app.api.routes import categories, progress, asr
 
 
 # Load environment variables
 load_dotenv()
+
+# ==========================================
+# FIREBASE INITIALIZATION
+# ==========================================
+# We wrap it in a try-except to prevent crashing if it's already initialized (important for reloading)
+try:
+    cred = credentials.Certificate("firebase-credentials.json")
+    firebase_admin.initialize_app(cred)
+    print("Firebase Admin SDK initialized successfully!")
+except ValueError:
+    # App is already initialized (happens during uvicorn auto-reloads)
+    pass
 
 # Initialize the FastAPI application
 app = FastAPI(
