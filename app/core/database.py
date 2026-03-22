@@ -10,7 +10,7 @@ load_dotenv()
 SQLALCHEMY_DATABASE_URL = os.environ.get("DATABASE_URL")
 
 # Create the SQLAlchemy Engine - The engine is responsible for establishing the actual connection to Neon.
-engine = create_engine(SQLALCHEMY_DATABASE_URL)
+engine = create_engine(SQLALCHEMY_DATABASE_URL, pool_pre_ping=True)
 
 # Create a Session class.
 # Every time we want to read or write to the DB (e.g., when a user logs in),

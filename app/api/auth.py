@@ -40,9 +40,9 @@ def get_current_user(
 
     try:
         # 1. Verify the Token via Firebase Admin SDK
-        # This contacts Google's servers to ensure the token is authentic, correctly signed, and not expired.
+        # This contacts Google's servers to ensure the token is authentic, correctly signed, and not expired. Allows up to 10 seconds of time difference between the device and the server
         # It throws an exception if verification fails.
-        decoded_token = auth.verify_id_token(token)
+        decoded_token = auth.verify_id_token(token, clock_skew_seconds=10)
 
         # 2. Extract User Data from the Decoded Token
         uid = decoded_token.get("uid")
@@ -72,8 +72,19 @@ def get_current_user(
 
     except Exception as e:
         # Catch-all for any verification failures (expired token, malicious payload, etc.)
+        #raise HTTPException(
+        #    status_code=status.HTTP_401_UNAUTHORIZED,
+        #    detail="Invalid authentication credentials or token expired.",
+        #    headers={"WWW-Authenticate": "Bearer"},
+        #)
+        # BEST PRACTICE DEBUGGING: Print the exact error to the server console!
+        print(f"AUTHENTICATION CRASH: {str(e)}")
+        import traceback
+        traceback.print_exc()  # This will print the exact line number that failed
+
+        # Catch-all for any verification failures (expired token, malicious payload, etc.)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication credentials or token expired.",
+            detail=f"Auth Failed: {str(e)}",  # Sending the error to the Android App too!
             headers={"WWW-Authenticate": "Bearer"},
         )
