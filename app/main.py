@@ -7,7 +7,7 @@ import firebase_admin
 from firebase_admin import credentials
 
 # API Routers imports
-from app.api.routes import categories, progress, asr
+from app.api.routes import categories, progress, lessons, asr
 
 
 # Load environment variables
@@ -50,6 +50,7 @@ app.add_middleware(
 # Here we attach all the endpoints we built to the main app
 app.include_router(categories.router)
 app.include_router(progress.router)
+app.include_router(lessons.router)
 app.include_router(asr.router, tags=["Audio & Speech"])
 
 # Optional: A simple health check endpoint at the root

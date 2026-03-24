@@ -17,3 +17,18 @@ class LessonResponse(BaseModel):
 
     # This config allows Pydantic to read data directly from SQLAlchemy models
     model_config = ConfigDict(from_attributes=True)
+
+
+class LessonDetailsResponse(BaseModel):
+    """
+    Maps to the Kotlin `LessonDetails` data class.
+    Provides comprehensive details about a specific lesson and the user's progress in it.
+    """
+    id: str
+    title: str
+    description: str
+    icon: str | None = None
+    sentences_count: int
+    completed_sentences: int
+
+    model_config = ConfigDict(from_attributes=True)

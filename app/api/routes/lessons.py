@@ -1,0 +1,37 @@
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+
+from app.core.database import get_db
+from app.api.auth import get_current_user
+
+from app.schemas.lesson import LessonDetailsResponse
+from app.services.lesson_service import get_lesson_details
+
+# ==========================================
+# LESSONS ROUTER
+# ==========================================
+
+router = APIRouter(prefix="/lessons", tags=["Lessons"])
+
+
+@router.get("/{lesson_id}", response_model=LessonDetailsResponse)
+def read_lesson_details(
+        lesson_id: str,
+        db: Session = Depends(get_db),
+        current_user_id: str = Depends(get_current_user)
+):
+    """
+    Retrieve details and user progress for a specific lesson.
+    Requires a valid Firebase Bearer token.
+    """
+    # Calling the business logic we built in Service
+    lesson_details = get_lesson_details(db=db, lesson_id=lesson_id, user_id=current_user_id)
+
+    # If the class does not exist in the database, we will return a professional 404 error.
+    if not lesson_details:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Lesson with ID {lesson_id} not found."
+        )
+
+    return lesson_details
