@@ -32,3 +32,13 @@ class LessonDetailsResponse(BaseModel):
     completed_sentences: int
 
     model_config = ConfigDict(from_attributes=True)
+
+class SentenceResponse(BaseModel):
+    """
+    Represents a single sentence within a lesson.
+    """
+    id: str
+    text: str
+    order_index: int
+
+    model_config = ConfigDict(from_attributes=True)

@@ -1,4 +1,4 @@
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from sqlalchemy.orm import Session
 
 from app.models.domain import Lesson, Sentence, UserSentenceProgress
@@ -44,3 +44,28 @@ def get_lesson_details(db: Session, lesson_id: str, user_id: str) -> Optional[Di
         "sentences_count": sentences_count,
         "completed_sentences": completed_sentences
     }
+
+
+def get_lesson_sentences(db: Session, lesson_id: str) -> List[Dict[str, Any]]:
+    """
+    Fetches all sentences for a specific lesson, ordered by their sequence,
+    and returns them as a list of dictionaries.
+    """
+    # fetch from db
+    sentences_query = (
+        db.query(Sentence)
+        .filter(Sentence.lesson_id == lesson_id)
+        .order_by(Sentence.order_index.asc())
+        .all()
+    )
+
+    # build the result list
+    result = []
+    for s in sentences_query:
+        result.append({
+            "id": s.id,
+            "text": s.text,
+            "order_index": s.order_index
+        })
+
+    return result

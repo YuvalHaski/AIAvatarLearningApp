@@ -13,3 +13,4 @@ alembic
 
 # Firenase
 firebase-admin
+pydantic
