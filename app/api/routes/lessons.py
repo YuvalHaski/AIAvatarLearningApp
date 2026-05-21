@@ -5,8 +5,8 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.api.auth import get_current_user
 
-from app.schemas.lesson import LessonDetailsResponse, SentenceResponse
-from app.services.lesson_service import get_lesson_details, get_lesson_sentences
+from app.schemas.lesson import LessonDetailsResponse, SentenceResponse, SentenceProgressRequest, SentenceProgressResponse
+from app.services.lesson_service import get_lesson_details, get_lesson_sentences, update_sentence_progress
 
 # ==========================================
 # LESSONS ROUTER
@@ -61,3 +61,28 @@ def read_lesson_sentences(
         )
 
     return sentences
+
+
+@router.post("/progress/{lesson_id}/sentences/{sentence_id}", response_model=SentenceProgressResponse)
+def save_sentence_progress(
+        lesson_id: str,
+        sentence_id: str,
+        payload: SentenceProgressRequest,
+        db: Session = Depends(get_db),
+        current_user_id: str = Depends(get_current_user)
+):
+    """
+    Saves the user's evaluation score for a specific sentence.
+    It automatically updates the highest score and recalculates the overall lesson progress.
+    Requires a valid Firebase Bearer token.
+    """
+    # Delegate the complex business logic to the service layer
+    result = update_sentence_progress(
+        db=db,
+        user_id=current_user_id,
+        lesson_id=lesson_id,
+        sentence_id=sentence_id,
+        score=payload.score
+    )
+
+    return result

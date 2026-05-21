@@ -105,7 +105,6 @@ class UserSentenceProgress(Base):
     user_id = Column(String, ForeignKey("users.id"), primary_key=True)
     sentence_id = Column(String, ForeignKey("sentences.id"), primary_key=True)
     highest_score = Column(Integer, default=0)
-    is_passed = Column(Boolean, default=False)
 
 
 class UserBadge(Base):
