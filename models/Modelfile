@@ -1,0 +1,2 @@
+FROM ./aiavatar-feedback-q4_k_m.gguf
+PARAMETER temperature 0.3
