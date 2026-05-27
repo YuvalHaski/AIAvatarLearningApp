@@ -209,3 +209,6 @@ __marimo__/
 
 # Training dataset backups (kept locally for re-curation; large + regenerable)
 training/data/*.original
+
+# Locally downloaded model weights (large, fetched from Drive after Colab run)
+/models/*.gguf

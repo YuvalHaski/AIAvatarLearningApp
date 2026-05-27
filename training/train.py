@@ -90,7 +90,7 @@ def main() -> None:
         bf16=True,
         # The dataset has a "messages" column; SFTTrainer applies the chat
         # template and masks everything except the assistant turn.
-        max_seq_length=1024,
+        max_length=1024,
     )
 
     trainer = SFTTrainer(
