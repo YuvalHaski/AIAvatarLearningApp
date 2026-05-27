@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from typing import List, Dict, Any
@@ -6,6 +7,96 @@ from app.models.domain import (
     Category, Badge, UserBadge,
     UserLessonProgress, UserSentenceProgress, ProgressStatusEnum, Sentence
 )
+
+
+# ==========================================
+# ATTEMPT PERSISTENCE
+# ==========================================
+
+def record_attempt(
+    db: Session,
+    user_id: str,
+    sentence: Sentence,
+    final_score: int,
+    is_passed: bool,
+) -> None:
+    """Persist one practice attempt to the progress tables.
+
+    - user_sentence_progress: highest_score is monotonic (max of old & new),
+      is_passed is sticky (once true, stays true).
+    - user_lesson_progress: recomputed from the sentence-level state so the
+      lesson row stays consistent with reality (no drift).
+    """
+    now = datetime.now(timezone.utc)
+
+    # --- 1. Upsert the per-sentence row ---
+    sentence_progress = (
+        db.query(UserSentenceProgress)
+        .filter_by(user_id=user_id, sentence_id=sentence.id)
+        .first()
+    )
+    if sentence_progress is None:
+        sentence_progress = UserSentenceProgress(
+            user_id=user_id,
+            sentence_id=sentence.id,
+            highest_score=final_score,
+            is_passed=is_passed,
+        )
+        db.add(sentence_progress)
+    else:
+        if final_score > (sentence_progress.highest_score or 0):
+            sentence_progress.highest_score = final_score
+        if is_passed and not sentence_progress.is_passed:
+            sentence_progress.is_passed = True
+
+    # Flush so the recompute below sees the just-written row.
+    db.flush()
+
+    # --- 2. Recompute the lesson-level row from sentence state ---
+    lesson_id = sentence.lesson_id
+    total_sentences = (
+        db.query(Sentence).filter(Sentence.lesson_id == lesson_id).count()
+    )
+    passed_sentences = (
+        db.query(UserSentenceProgress)
+        .join(Sentence, UserSentenceProgress.sentence_id == Sentence.id)
+        .filter(
+            Sentence.lesson_id == lesson_id,
+            UserSentenceProgress.user_id == user_id,
+            UserSentenceProgress.is_passed.is_(True),
+        )
+        .count()
+    )
+
+    progress_pct = (
+        (passed_sentences / total_sentences) * 100.0 if total_sentences else 0.0
+    )
+    if total_sentences and passed_sentences >= total_sentences:
+        status = ProgressStatusEnum.COMPLETED
+    else:
+        # Any attempt at all means the lesson is in progress.
+        status = ProgressStatusEnum.IN_PROGRESS
+
+    lesson_progress = (
+        db.query(UserLessonProgress)
+        .filter_by(user_id=user_id, lesson_id=lesson_id)
+        .first()
+    )
+    if lesson_progress is None:
+        lesson_progress = UserLessonProgress(
+            user_id=user_id,
+            lesson_id=lesson_id,
+            status=status,
+            progress_percentage=progress_pct,
+            last_practiced_at=now,
+        )
+        db.add(lesson_progress)
+    else:
+        lesson_progress.status = status
+        lesson_progress.progress_percentage = progress_pct
+        lesson_progress.last_practiced_at = now
+
+    db.commit()
 
 
 # ==========================================

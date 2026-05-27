@@ -206,3 +206,6 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 /firebase-credentials.json
+
+# Training dataset backups (kept locally for re-curation; large + regenerable)
+training/data/*.original

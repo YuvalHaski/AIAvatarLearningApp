@@ -1,0 +1,12 @@
+# Training-only dependencies (NOT needed to run the app).
+# Install on the GPU machine: pip install -r training/requirements.txt
+transformers>=4.44
+peft>=0.12
+trl>=0.9
+bitsandbytes>=0.43
+datasets>=2.20
+accelerate>=0.33
+torch
+# Dataset bootstrapping (distillation from a strong model) + evaluation
+openai
+bert-score
