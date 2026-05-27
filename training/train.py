@@ -109,7 +109,7 @@ def main() -> None:
     del model
     torch.cuda.empty_cache()
     base = AutoModelForCausalLM.from_pretrained(
-        args.base_model, torch_dtype=torch.float16,
+        args.base_model, dtype=torch.float16,
         device_map="auto", trust_remote_code=True,
     )
     merged = PeftModel.from_pretrained(base, str(adapter_dir)).merge_and_unload()
