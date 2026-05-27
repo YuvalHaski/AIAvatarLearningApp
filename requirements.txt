@@ -14,3 +14,13 @@ alembic
 # Firenase
 firebase-admin
 pydantic
+
+# Speech: Azure Pronunciation Assessment (ASR) + audio handling
+azure-cognitiveservices-speech
+pydub
+
+# HTTP client for the Stage 2 feedback model service
+httpx
+
+# Tests
+pytest
