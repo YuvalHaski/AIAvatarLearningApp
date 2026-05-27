@@ -119,6 +119,9 @@ def main() -> None:
             m._tied_weights_keys = {k: k for k in tk}
     merged.save_pretrained(str(merged_dir))
     tokenizer.save_pretrained(str(merged_dir))
+    AutoTokenizer.from_pretrained(args.base_model, use_fast=False).save_pretrained(
+        str(merged_dir)
+    )
     print(f"saved merged model -> {merged_dir}  (serve this with vLLM)")
 
 
