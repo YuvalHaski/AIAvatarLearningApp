@@ -77,8 +77,7 @@ async def asr(
         db=db,
         user_id=current_user_id,
         sentence=sentence,
-        final_score=report.final_score,
-        is_passed=report.is_passed,
+        final_score=report.final_score
     )
 
     return AssessmentResponse(
