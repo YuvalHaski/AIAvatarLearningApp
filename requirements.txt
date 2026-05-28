@@ -18,6 +18,7 @@ pydantic
 # Speech: Azure Pronunciation Assessment (ASR) + audio handling
 azure-cognitiveservices-speech
 pydub
+imageio-ffmpeg
 
 # HTTP client for the Stage 2 feedback model service
 httpx
