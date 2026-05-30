@@ -113,9 +113,13 @@ def main() -> None:
         device_map="auto", trust_remote_code=True,
     )
     merged = PeftModel.from_pretrained(base, str(adapter_dir)).merge_and_unload()
-    # safe_serialization=False writes pytorch_model.bin instead of safetensors.
-    # Safetensors deduplicates tied weights, which drops lm_head.weight for
-    # Phi-3 and produces garbage tokens after GGUF conversion.
+    # Phi-3 sets _tied_weights_keys=["lm_head.weight"] (list) but transformers'
+    # save_pretrained calls .keys() on it. The naive list->{k:k} fix dedupes
+    # lm_head.weight out of the state_dict and produces garbage GGUF.
+    # Phi-3.5-mini has tie_word_embeddings=False, so clearing it is safe.
+    for m in merged.modules():
+        if hasattr(m, "_tied_weights_keys"):
+            m._tied_weights_keys = {}
     merged.save_pretrained(str(merged_dir), safe_serialization=False)
     tokenizer.save_pretrained(str(merged_dir))
     AutoTokenizer.from_pretrained(args.base_model, use_fast=False).save_pretrained(
