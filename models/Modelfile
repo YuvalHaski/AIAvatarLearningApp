@@ -1,2 +1,5 @@
-FROM ./aiavatar-feedback-q4_k_m.gguf
+FROM phi3.5
+
+ADAPTER ./aiavatar-adapter.gguf
+
 PARAMETER temperature 0.3
