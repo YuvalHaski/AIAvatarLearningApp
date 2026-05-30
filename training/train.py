@@ -113,11 +113,10 @@ def main() -> None:
         device_map="auto", trust_remote_code=True,
     )
     merged = PeftModel.from_pretrained(base, str(adapter_dir)).merge_and_unload()
-    for m in merged.modules():
-        tk = getattr(m, "_tied_weights_keys", None)
-        if isinstance(tk, list):
-            m._tied_weights_keys = {k: k for k in tk}
-    merged.save_pretrained(str(merged_dir))
+    # safe_serialization=False writes pytorch_model.bin instead of safetensors.
+    # Safetensors deduplicates tied weights, which drops lm_head.weight for
+    # Phi-3 and produces garbage tokens after GGUF conversion.
+    merged.save_pretrained(str(merged_dir), safe_serialization=False)
     tokenizer.save_pretrained(str(merged_dir))
     AutoTokenizer.from_pretrained(args.base_model, use_fast=False).save_pretrained(
         str(merged_dir)
