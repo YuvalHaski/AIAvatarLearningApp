@@ -212,3 +212,5 @@ training/data/*.original
 
 # Locally downloaded model weights (large, fetched from Drive after Colab run)
 /models/*.gguf
+/models/adapter/
+/models/merged/
