@@ -1,6 +1,6 @@
 from typing import Optional, Dict, Any, List
 from sqlalchemy.orm import Session
-
+from sqlalchemy.sql import func
 from app.models.domain import Lesson, Sentence, UserSentenceProgress
 
 
@@ -28,8 +28,7 @@ def get_lesson_details(db: Session, lesson_id: str, user_id: str) -> Optional[Di
         .join(Sentence, UserSentenceProgress.sentence_id == Sentence.id)
         .filter(
             Sentence.lesson_id == lesson_id,
-            UserSentenceProgress.user_id == user_id,
-            UserSentenceProgress.is_passed == True  # Only count successfully passed sentences
+            UserSentenceProgress.user_id == user_id
         )
         .count()
     )
@@ -44,7 +43,6 @@ def get_lesson_details(db: Session, lesson_id: str, user_id: str) -> Optional[Di
         "sentences_count": sentences_count,
         "completed_sentences": completed_sentences
     }
-
 
 def get_lesson_sentences(db: Session, lesson_id: str) -> List[Dict[str, Any]]:
     """

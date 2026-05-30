@@ -14,16 +14,14 @@ from app.models.domain import (
 # ==========================================
 
 def record_attempt(
-    db: Session,
-    user_id: str,
-    sentence: Sentence,
-    final_score: int,
-    is_passed: bool,
+        db: Session,
+        user_id: str,
+        sentence: Sentence,
+        final_score: int,
 ) -> None:
     """Persist one practice attempt to the progress tables.
 
-    - user_sentence_progress: highest_score is monotonic (max of old & new),
-      is_passed is sticky (once true, stays true).
+    - user_sentence_progress: highest_score is monotonic (max of old & new).
     - user_lesson_progress: recomputed from the sentence-level state so the
       lesson row stays consistent with reality (no drift).
     """
@@ -35,19 +33,19 @@ def record_attempt(
         .filter_by(user_id=user_id, sentence_id=sentence.id)
         .first()
     )
+
     if sentence_progress is None:
+        # User hasn't practiced this sentence before
         sentence_progress = UserSentenceProgress(
             user_id=user_id,
             sentence_id=sentence.id,
             highest_score=final_score,
-            is_passed=is_passed,
         )
         db.add(sentence_progress)
     else:
+        # Update only if the new score is higher
         if final_score > (sentence_progress.highest_score or 0):
             sentence_progress.highest_score = final_score
-        if is_passed and not sentence_progress.is_passed:
-            sentence_progress.is_passed = True
 
     # Flush so the recompute below sees the just-written row.
     db.flush()
@@ -57,21 +55,23 @@ def record_attempt(
     total_sentences = (
         db.query(Sentence).filter(Sentence.lesson_id == lesson_id).count()
     )
-    passed_sentences = (
+
+    # We now count ALL practiced sentences, regardless of pass/fail
+    completed_sentences = (
         db.query(UserSentenceProgress)
         .join(Sentence, UserSentenceProgress.sentence_id == Sentence.id)
         .filter(
             Sentence.lesson_id == lesson_id,
-            UserSentenceProgress.user_id == user_id,
-            UserSentenceProgress.is_passed.is_(True),
+            UserSentenceProgress.user_id == user_id
         )
         .count()
     )
 
     progress_pct = (
-        (passed_sentences / total_sentences) * 100.0 if total_sentences else 0.0
+        (completed_sentences / total_sentences) * 100.0 if total_sentences else 0.0
     )
-    if total_sentences and passed_sentences >= total_sentences:
+
+    if total_sentences and completed_sentences >= total_sentences:
         status = ProgressStatusEnum.COMPLETED
     else:
         # Any attempt at all means the lesson is in progress.
@@ -82,6 +82,7 @@ def record_attempt(
         .filter_by(user_id=user_id, lesson_id=lesson_id)
         .first()
     )
+
     if lesson_progress is None:
         lesson_progress = UserLessonProgress(
             user_id=user_id,

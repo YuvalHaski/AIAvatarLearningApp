@@ -42,3 +42,20 @@ class SentenceResponse(BaseModel):
     order_index: int
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class SentenceProgressRequest(BaseModel):
+    """
+    Payload received from the Android app when a user completes a sentence.
+    Contains the score evaluated by the ASR service.
+    """
+    score: int
+
+
+class SentenceProgressResponse(BaseModel):
+    """
+    Response sent back to the app after updating the progress in the database.
+    Returning the lesson progress percentage saves the app from making an extra API call to update the UI.
+    """
+    highest_score: int
+    lesson_progress_percentage: float
