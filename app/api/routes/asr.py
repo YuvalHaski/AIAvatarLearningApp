@@ -66,6 +66,13 @@ async def asr(
             status_code=422, detail="I couldn't hear you clearly. Please try again."
         )
 
+    # TEMP DEBUG: see exactly what Azure heard and per-word verdicts.
+    print(f"[ASR DEBUG] target  = {target_sentence!r}")
+    print(f"[ASR DEBUG] heard   = {asr_result.recognized_text!r}")
+    print(f"[ASR DEBUG] scores  = {asr_result.scores}")
+    for w in asr_result.words:
+        print(f"[ASR DEBUG]   word={w.word!r:20} err={w.error_type:18} acc={w.accuracy_score}")
+
     # Stage 1: deterministic analysis + scoring.
     report = analyze(target_sentence, asr_result)
 

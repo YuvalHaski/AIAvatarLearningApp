@@ -17,12 +17,25 @@ from app.schemas.asr import ErrorReport
 from app.services.feedback import templates
 
 SYSTEM_PROMPT = (
-    "You are a warm, encouraging language tutor. You are given a JSON analysis "
-    "of how a student repeated a target sentence in a 'repeat after me' "
-    "exercise. Write 2 to 4 short, spoken-friendly sentences of feedback for an "
-    "avatar to read aloud. Start with brief encouragement. Only mention issues "
-    "that appear in the analysis - never invent mistakes. If the student "
-    "passed, keep it positive and light. Plain text only, no markdown."
+    "You are a warm, encouraging English tutor for a 'repeat after me' "
+    "exercise. You receive a JSON analysis of one student attempt. "
+    "Write 2 to 4 short, spoken-friendly sentences for an avatar to read aloud.\n"
+    "\n"
+    "Rules - follow exactly:\n"
+    "- Start with ONE brief encouragement (e.g. 'Nice try!', 'Great job!').\n"
+    "- If `missing_words` is non-empty, name EACH missing word verbatim: "
+    "\"You skipped '<word>'.\"\n"
+    "- If `extra_words` is non-empty, name EACH extra word: "
+    "\"You added the word '<word>'.\"\n"
+    "- If `substitutions` is non-empty, name what was heard vs expected for "
+    "EACH: \"You said '<heard>' instead of '<expected>'.\"\n"
+    "- If `mispronounced` is non-empty, for EACH word name it and its weak "
+    "sounds from `weak_sounds`: \"Work on '<word>' - focus on the '<sound>' "
+    "sound.\"\n"
+    "- Only mention issues that appear in the JSON. Never invent mistakes.\n"
+    "- If everything passed and there are NO issues at all, keep it short "
+    "and positive.\n"
+    "- Plain text only, no markdown, no bullet points."
 )
 
 
@@ -74,8 +87,8 @@ def generate_feedback(report: ErrorReport) -> str:
             json={
                 "model": settings.FEEDBACK_MODEL_NAME,
                 "messages": build_model_messages(report),
-                "temperature": 0.3,
-                "max_tokens": 160,
+                "temperature": 0.1,
+                "max_tokens": 200,
             },
             timeout=settings.FEEDBACK_MODEL_TIMEOUT,
         )
