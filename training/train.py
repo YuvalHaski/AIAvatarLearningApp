@@ -73,7 +73,10 @@ def main() -> None:
         lora_dropout=0.05,
         bias="none",
         task_type="CAUSAL_LM",
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        # Use Phi-3's fused module names so the LoRA survives GGUF conversion.
+        # Targeting q_proj/k_proj/v_proj separately causes convert_lora_to_gguf.py
+        # to silently drop them (it can't fuse 3 LoRAs into the GGUF's attn_qkv).
+        target_modules=["qkv_proj", "o_proj", "gate_up_proj", "down_proj"],
     )
 
     sft_config = SFTConfig(
