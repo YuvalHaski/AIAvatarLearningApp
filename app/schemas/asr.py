@@ -95,6 +95,7 @@ class ErrorReport(BaseModel):
 class AssessmentResponse(BaseModel):
     """What the /asr endpoint returns to the UI."""
     sentence_id: str
+    run_id: str
     recognized_text: str
     target_sentence: str
     scores: PronunciationScores

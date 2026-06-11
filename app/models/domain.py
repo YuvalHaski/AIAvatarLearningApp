@@ -86,7 +86,7 @@ class Badge(Base):
 
 
 # ==========================================
-# PROGRESS TABLES (MANY-TO-MANY)
+# PROGRESS TABLES
 # ==========================================
 
 class UserLessonProgress(Base):
@@ -95,16 +95,33 @@ class UserLessonProgress(Base):
     user_id = Column(String, ForeignKey("users.id"), primary_key=True)
     lesson_id = Column(String, ForeignKey("lessons.id"), primary_key=True)
     status = Column(Enum(ProgressStatusEnum), default=ProgressStatusEnum.NOT_STARTED)
-    progress_percentage = Column(Float, default=0.0)
+
+    # Tracks the UUID of the currently active session/run for this lesson.
+    # Nullable because a lesson might be completed or not yet started.
+    current_run_id = Column(String, nullable=True)
+
     last_practiced_at = Column(DateTime(timezone=True), onupdate=func.now())
 
 
-class UserSentenceProgress(Base):
-    __tablename__ = "user_sentence_progress"
+class SentenceAttemptHistory(Base):
+    """
+    Append-only table to track every pronunciation attempt made by the user.
+    """
+    __tablename__ = "sentence_attempt_history"
 
-    user_id = Column(String, ForeignKey("users.id"), primary_key=True)
-    sentence_id = Column(String, ForeignKey("sentences.id"), primary_key=True)
-    highest_score = Column(Integer, default=0)
+    # Unique identifier for each individual attempt
+    id = Column(String, primary_key=True, index=True)
+
+    # Foreign keys with indexes for fast querying and aggregation
+    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    lesson_id = Column(String, ForeignKey("lessons.id"), nullable=False, index=True)
+    sentence_id = Column(String, ForeignKey("sentences.id"), nullable=False, index=True)
+
+    # The ID linking this attempt to a specific lesson run (matches current_run_id)
+    run_id = Column(String, nullable=False, index=True)
+
+    score = Column(Integer, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class UserBadge(Base):
