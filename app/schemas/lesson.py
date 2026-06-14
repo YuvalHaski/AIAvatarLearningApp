@@ -12,10 +12,9 @@ class LessonResponse(BaseModel):
     """
     id: str
     title: str
-    progress_percentage: float  # Value between 0.0 and 1.0
+    progress_percentage: float
     difficulty: DifficultyEnum
 
-    # This config allows Pydantic to read data directly from SQLAlchemy models
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -29,7 +28,7 @@ class LessonDetailsResponse(BaseModel):
     description: str
     icon: str | None = None
     sentences_count: int
-    completed_sentences: int
+    completed_sentences: int  # This now reflects the CURRENT run count
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -44,6 +43,14 @@ class SentenceResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class LessonStartResponse(BaseModel):
+    """
+    Response returned when the client initiates a lesson.
+    The client MUST hold onto this run_id and send it with every ASR request.
+    """
+    run_id: str
+
+
 class SentenceProgressRequest(BaseModel):
     """
     Payload received from the Android app when a user completes a sentence.
@@ -55,7 +62,6 @@ class SentenceProgressRequest(BaseModel):
 class SentenceProgressResponse(BaseModel):
     """
     Response sent back to the app after updating the progress in the database.
-    Returning the lesson progress percentage saves the app from making an extra API call to update the UI.
     """
     highest_score: int
     lesson_progress_percentage: float

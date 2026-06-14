@@ -26,6 +26,7 @@ MAX_AUDIO_MB = 20
 async def asr(
     file: UploadFile = File(...),
     sentence_id: str = Form(...),
+    run_id: str = Form(...),
     language: str | None = Form(None),
     current_user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -79,16 +80,19 @@ async def asr(
     # Stage 2: spoken feedback (fine-tuned model, template fallback).
     feedback_text = generate_feedback(report)
 
-    # Persist this attempt to user_sentence_progress + user_lesson_progress.
+    # Persist this attempt to sentence_attempt_history + user_lesson_progress.
+    # We now pass the run_id to link this attempt to the current session.
     record_attempt(
         db=db,
         user_id=current_user_id,
         sentence=sentence,
+        run_id=run_id,
         final_score=report.final_score
     )
 
     return AssessmentResponse(
         sentence_id=sentence.id,
+        run_id=run_id,
         recognized_text=report.recognized_text,
         target_sentence=target_sentence,
         scores=report.scores,

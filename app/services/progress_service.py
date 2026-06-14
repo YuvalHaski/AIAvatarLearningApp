@@ -1,3 +1,5 @@
+import uuid
+
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -5,7 +7,7 @@ from typing import List, Dict, Any
 
 from app.models.domain import (
     Category, Badge, UserBadge,
-    UserLessonProgress, UserSentenceProgress, ProgressStatusEnum, Sentence
+    UserLessonProgress, SentenceAttemptHistory, ProgressStatusEnum, Sentence
 )
 
 
@@ -18,84 +20,65 @@ def record_attempt(
         user_id: str,
         sentence: Sentence,
         final_score: int,
+        run_id: str  # NEW: Received from the ASR route
 ) -> None:
-    """Persist one practice attempt to the progress tables.
-
-    - user_sentence_progress: highest_score is monotonic (max of old & new).
-    - user_lesson_progress: recomputed from the sentence-level state so the
-      lesson row stays consistent with reality (no drift).
+    """
+    Persist one practice attempt to the history table and evaluate lesson progress.
     """
     now = datetime.now(timezone.utc)
-
-    # --- 1. Upsert the per-sentence row ---
-    sentence_progress = (
-        db.query(UserSentenceProgress)
-        .filter_by(user_id=user_id, sentence_id=sentence.id)
-        .first()
-    )
-
-    if sentence_progress is None:
-        # User hasn't practiced this sentence before
-        sentence_progress = UserSentenceProgress(
-            user_id=user_id,
-            sentence_id=sentence.id,
-            highest_score=final_score,
-        )
-        db.add(sentence_progress)
-    else:
-        # Update only if the new score is higher
-        if final_score > (sentence_progress.highest_score or 0):
-            sentence_progress.highest_score = final_score
-
-    # Flush so the recompute below sees the just-written row.
-    db.flush()
-
-    # --- 2. Recompute the lesson-level row from sentence state ---
     lesson_id = sentence.lesson_id
-    total_sentences = (
-        db.query(Sentence).filter(Sentence.lesson_id == lesson_id).count()
+
+    # --- 1. Insert into Append-Only History Table ---
+    attempt_id = str(uuid.uuid4())
+    new_attempt = SentenceAttemptHistory(
+        id=attempt_id,
+        user_id=user_id,
+        lesson_id=lesson_id,
+        sentence_id=sentence.id,
+        run_id=run_id,
+        score=final_score,
+        created_at=now
+    )
+    db.add(new_attempt)
+    db.flush()  # Push to DB so the recompute below sees it immediately
+
+    # --- 2. Recompute the lesson-level status based on the CURRENT run ---
+    total_sentences = db.query(Sentence).filter(Sentence.lesson_id == lesson_id).count()
+
+    # Count distinct sentences completed in THIS specific run
+    completed_in_run = (
+            db.query(func.count(func.distinct(SentenceAttemptHistory.sentence_id)))
+            .filter(
+                SentenceAttemptHistory.user_id == user_id,
+                SentenceAttemptHistory.lesson_id == lesson_id,
+                SentenceAttemptHistory.run_id == run_id
+            )
+            .scalar() or 0
     )
 
-    # We now count ALL practiced sentences, regardless of pass/fail
-    completed_sentences = (
-        db.query(UserSentenceProgress)
-        .join(Sentence, UserSentenceProgress.sentence_id == Sentence.id)
-        .filter(
-            Sentence.lesson_id == lesson_id,
-            UserSentenceProgress.user_id == user_id
-        )
-        .count()
-    )
-
-    progress_pct = (
-        (completed_sentences / total_sentences) * 100.0 if total_sentences else 0.0
-    )
-
-    if total_sentences and completed_sentences >= total_sentences:
-        status = ProgressStatusEnum.COMPLETED
-    else:
-        # Any attempt at all means the lesson is in progress.
-        status = ProgressStatusEnum.IN_PROGRESS
-
-    lesson_progress = (
-        db.query(UserLessonProgress)
-        .filter_by(user_id=user_id, lesson_id=lesson_id)
-        .first()
-    )
+    lesson_progress = db.query(UserLessonProgress).filter_by(user_id=user_id, lesson_id=lesson_id).first()
 
     if lesson_progress is None:
+        # Fallback mechanism in case the client somehow bypassed the /start route
         lesson_progress = UserLessonProgress(
             user_id=user_id,
             lesson_id=lesson_id,
-            status=status,
-            progress_percentage=progress_pct,
-            last_practiced_at=now,
+            current_run_id=run_id,
+            status=ProgressStatusEnum.COMPLETED if (
+                    0 < total_sentences <= completed_in_run) else ProgressStatusEnum.IN_PROGRESS,
+            last_practiced_at=now
         )
         db.add(lesson_progress)
     else:
-        lesson_progress.status = status
-        lesson_progress.progress_percentage = progress_pct
         lesson_progress.last_practiced_at = now
+
+        # If they finished all sentences in this active run, mark the lesson as COMPLETED
+        if 0 < total_sentences <= completed_in_run:
+            lesson_progress.status = ProgressStatusEnum.COMPLETED
+        # If it was NOT_STARTED, move it to IN_PROGRESS.
+        # Note: If it's already COMPLETED (from an older run), we leave it as COMPLETED.
+        elif lesson_progress.status == ProgressStatusEnum.NOT_STARTED:
+            lesson_progress.status = ProgressStatusEnum.IN_PROGRESS
 
     db.commit()
 
@@ -107,18 +90,18 @@ def record_attempt(
 def get_overview_data(db: Session, user_id: str) -> Dict[str, Any]:
     """
     Calculates the high-level overview statistics for the user.
-
-    Args:
-        db (Session): The database session.
-        user_id (str): The current user's ID.
-
-    Returns:
-        Dict: A dictionary matching the OverviewDataResponse schema.
     """
-    # 1. Calculate Average Score (across all practiced sentences)
-    # Using SQLAlchemy's func.avg to let the database do the math efficiently
-    avg_score_result = db.query(func.avg(UserSentenceProgress.highest_score)) \
-        .filter(UserSentenceProgress.user_id == user_id).scalar()
+    # 1. Calculate Average Score
+    # We use a subquery to find the MAX score for each distinct sentence the user practiced,
+    # and then calculate the average of those highest scores.
+    subquery_max_scores = (
+        db.query(func.max(SentenceAttemptHistory.score).label("max_score"))
+        .filter(SentenceAttemptHistory.user_id == user_id)
+        .group_by(SentenceAttemptHistory.sentence_id)
+        .subquery()
+    )
+
+    avg_score_result = db.query(func.avg(subquery_max_scores.c.max_score)).scalar()
     average_score = int(avg_score_result) if avg_score_result else 0
 
     # 2. Count Total Completed Lessons
@@ -145,7 +128,6 @@ def get_overview_data(db: Session, user_id: str) -> Dict[str, Any]:
             "id": badge.id,
             "title": badge.title,
             "icon": badge.icon,
-            # Returning ISO format. The Android client will format it to "2 days ago" etc.
             "earned_date": achieved_at.isoformat() if achieved_at else ""
         })
 
@@ -170,7 +152,6 @@ def get_category_achievements(db: Session, user_id: str) -> List[Dict[str, Any]]
     achievements = []
 
     for cat in categories:
-        # Get all lesson IDs for this category to filter progress efficiently
         lesson_ids = [lesson.id for lesson in cat.lessons]
 
         if not lesson_ids:
@@ -178,7 +159,6 @@ def get_category_achievements(db: Session, user_id: str) -> List[Dict[str, Any]]
 
         total_lessons = len(lesson_ids)
 
-        # Count completed and in-progress lessons for this specific category
         completed_lessons = db.query(UserLessonProgress).filter(
             UserLessonProgress.user_id == user_id,
             UserLessonProgress.lesson_id.in_(lesson_ids),
@@ -194,11 +174,19 @@ def get_category_achievements(db: Session, user_id: str) -> List[Dict[str, Any]]
         undone_lessons = total_lessons - (completed_lessons + in_progress_lessons)
 
         # Calculate average score specifically for this category's sentences
-        cat_avg_score = db.query(func.avg(UserSentenceProgress.highest_score)) \
-            .join(Sentence, UserSentenceProgress.sentence_id == Sentence.id) \
-            .filter(Sentence.lesson_id.in_(lesson_ids),
-                    UserSentenceProgress.user_id == user_id).scalar()
+        # Subquery: get the MAX score per sentence for this specific category
+        cat_subquery = (
+            db.query(func.max(SentenceAttemptHistory.score).label("max_score"))
+            .join(Sentence, SentenceAttemptHistory.sentence_id == Sentence.id)
+            .filter(
+                SentenceAttemptHistory.user_id == user_id,
+                Sentence.lesson_id.in_(lesson_ids)
+            )
+            .group_by(SentenceAttemptHistory.sentence_id)
+            .subquery()
+        )
 
+        cat_avg_score = db.query(func.avg(cat_subquery.c.max_score)).scalar()
         average_score = int(cat_avg_score) if cat_avg_score else 0
 
         achievements.append({
