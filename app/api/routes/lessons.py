@@ -5,8 +5,8 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.api.auth import get_current_user
 
-from app.schemas.lesson import LessonDetailsResponse, SentenceResponse, LessonStartResponse
-from app.services.lesson_service import get_lesson_details, get_lesson_sentences, start_lesson
+from app.schemas.lesson import LessonDetailsResponse, SentenceResponse, LessonStartResponse, LessonCompleteRequest, LessonCompleteResponse
+from app.services.lesson_service import get_lesson_details, get_lesson_sentences, start_lesson, complete_lesson
 
 # ==========================================
 # LESSONS ROUTER
@@ -72,3 +72,38 @@ def read_lesson_sentences(
         )
 
     return sentences
+
+
+@router.post("/{lesson_id}/complete", response_model=LessonCompleteResponse)
+def complete_lesson_endpoint(
+        lesson_id: str,
+        request: LessonCompleteRequest,
+        db: Session = Depends(get_db),
+        current_user_id: str = Depends(get_current_user)
+):
+    """
+    Marks the current lesson run as completed, calculates the final score,
+    and returns the summary along with dynamic feedback.
+    """
+    try:
+        # Pass the execution to the business logic layer (Service)
+        result = complete_lesson(
+            db=db,
+            lesson_id=lesson_id,
+            user_id=current_user_id,
+            run_id=request.run_id
+        )
+        return result
+
+    except ValueError as e:
+        # Catch the business logic error from the service and return a proper HTTP 400 Client Error
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        # Catch any unexpected database or server errors and return a 500 Server Error
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected error occurred while completing the lesson."
+        )
