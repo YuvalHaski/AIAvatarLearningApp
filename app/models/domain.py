@@ -54,7 +54,6 @@ class Lesson(Base):
     id = Column(String, primary_key=True, index=True)
     category_id = Column(String, ForeignKey("categories.id"), nullable=False)
     title = Column(String, nullable=False)
-    icon = Column(String)
     description = Column(String)
     difficulty = Column(Enum(DifficultyEnum), default=DifficultyEnum.EASY)
 

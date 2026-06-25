@@ -26,7 +26,6 @@ class LessonDetailsResponse(BaseModel):
     id: str
     title: str
     description: str
-    icon: str | None = None
     sentences_count: int
     completed_sentences: int  # This now reflects the CURRENT run count
 

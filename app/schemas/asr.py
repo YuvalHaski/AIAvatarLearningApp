@@ -55,6 +55,9 @@ class MispronouncedWord(BaseModel):
     accuracy_score: float
     # The specific phonemes inside the word that scored poorly.
     weak_phonemes: list[str] = Field(default_factory=list)
+    # Spoken-friendly anchor for the correct pronunciation, e.g.
+    # "the 'th' in 'thin'". None when no usable anchor is available.
+    correct_hint: str | None = None
 
 
 class FeedbackPoint(BaseModel):
