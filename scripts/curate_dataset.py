@@ -22,6 +22,10 @@ import shutil
 import sys
 from pathlib import Path
 
+# Allow `from app...` so we share the runtime's whole-word matcher.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from app.services.feedback.generator import _word_in_text
+
 DATA_DIR = Path(__file__).resolve().parents[1] / "training" / "data"
 
 _NEGATIVE_MARKERS = [
@@ -46,6 +50,19 @@ _SENTENCE_SPLIT_RE = re.compile(r"[.!?]+\s+")
 
 def _quoted_words(text: str) -> set[str]:
     return {m.lower() for m in _QUOTED_WORD_RE.findall(text)}
+
+
+def _required_words(payload: dict) -> list[str]:
+    """Every concrete item the feedback is contractually required to name.
+
+    Mirrors the runtime verifier in generator._ensure_coverage so the model is
+    curated against the exact contract it will be judged by at request time.
+    """
+    required = list(payload.get("missing_words", []))
+    required += list(payload.get("extra_words", []))
+    required += [s["expected"] for s in payload.get("substitutions", [])]
+    required += [m["word"] for m in payload.get("mispronounced", [])]
+    return [w for w in required if w]
 
 
 def _has_repetition(text: str) -> bool:
@@ -90,16 +107,25 @@ def _is_bad(payload: dict, feedback: str) -> str | None:
     allowed = set(re.findall(r"[\w']+", payload["target_sentence"].lower()))
     allowed |= {s["heard"].lower() for s in payload.get("substitutions", [])}
     allowed |= {w.lower() for w in payload.get("extra_words", [])}
-    # Phoneme labels referenced in the analysis are legitimate things to quote.
+    # Phoneme labels and anchor words referenced in the analysis are legitimate
+    # things to quote (e.g. "the 'th' sound like in 'thin'").
     for m in payload.get("mispronounced", []):
         allowed |= {p.lower() for p in m.get("weak_sounds", [])}
-    for fp in payload.get("focus_points", []):
-        if fp.get("detail"):
-            for q in re.findall(r"'([A-Za-z]+)'", fp["detail"]):
+        if m.get("word"):
+            allowed.add(m["word"].lower())
+        if m.get("correct_hint"):
+            for q in re.findall(r"'([A-Za-z]+)'", m["correct_hint"]):
                 allowed.add(q.lower())
     invented = _quoted_words(feedback) - allowed
     if invented:
         return f"invented quoted words: {sorted(invented)}"
+
+    # Drop any sample that fails to name a required item — the same omission
+    # the runtime verifier would have to patch. We want the model trained only
+    # on complete examples.
+    omitted = [w for w in _required_words(payload) if not _word_in_text(feedback, w)]
+    if omitted:
+        return f"omits required words: {sorted(omitted)}"
 
     if _has_repetition(feedback):
         return "near-duplicate phrase"

@@ -13,7 +13,7 @@ _PRAISE_FAIL = ["Good effort!", "Nice try!", "Almost there!", "You're getting cl
 _CLOSERS = ["Give it another try.", "Let's try once more.", "Try it again."]
 
 
-def _render_point(point: FeedbackPoint) -> str | None:
+def render_point(point: FeedbackPoint) -> str | None:
     """Turn one prioritized feedback point into a spoken sentence."""
     if point.kind == "praise":
         return None  # handled by the opening line
@@ -25,14 +25,19 @@ def _render_point(point: FeedbackPoint) -> str | None:
         heard = point.detail or "a different word"
         return f"You {heard} instead of '{point.word}'."
     if point.kind == "mispronunciation":
-        sentence = f"Work on how you say '{point.word}'."
+        # `detail` is the spoken-friendly anchor hint (correct_hint). Mirror the
+        # model's frame so the fallback reads the same: "For 'thought', practice
+        # the 'th' sound like in 'thin'." When there's no usable hint, fall back
+        # to a generic line rather than fabricate one.
         if point.detail:
-            sentence += f" Focus on {point.detail}."
-        return sentence
+            return f"For '{point.word}', practice {point.detail}."
+        return f"Work on the way you say '{point.word}'."
     if point.kind == "pattern":
         return f"I noticed {point.detail}."
     if point.kind == "fluency":
         return f"Try to {point.detail}."
+    if point.kind == "polish":
+        return f"To make it perfect, {point.detail}."
     return None
 
 
@@ -44,7 +49,7 @@ def render_feedback(report: ErrorReport) -> str:
     parts.append(random.choice(opener_pool))
 
     for point in report.feedback_points:
-        sentence = _render_point(point)
+        sentence = render_point(point)
         if sentence:
             parts.append(sentence)
 
