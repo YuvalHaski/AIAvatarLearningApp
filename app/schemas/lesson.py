@@ -1,5 +1,5 @@
 from pydantic import BaseModel, ConfigDict
-from app.models.domain import DifficultyEnum
+from app.models.domain import DifficultyEnum, ProgressStatusEnum
 
 # ==========================================
 # LESSON SCHEMAS
@@ -64,3 +64,26 @@ class SentenceProgressResponse(BaseModel):
     """
     highest_score: int
     lesson_progress_percentage: float
+
+
+# ==========================================
+# LESSON COMPLETION SCHEMAS
+# ==========================================
+
+class LessonCompleteRequest(BaseModel):
+    """
+    Payload sent by the Android app when the user finishes the last sentence of a lesson.
+    Contains the active run_id to verify and aggregate the session's scores securely.
+    """
+    run_id: str
+
+
+class LessonCompleteResponse(BaseModel):
+    """
+    Response returned to the app after successfully completing a lesson.
+    Contains aggregated metrics and dynamic feedback for the summary screen.
+    """
+    lesson_id: str
+    status: ProgressStatusEnum
+    average_score: int
+    feedback_text: str
