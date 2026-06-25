@@ -101,6 +101,14 @@ def assess_pronunciation(
         granularity=speechsdk.PronunciationAssessmentGranularity.Phoneme,
         enable_miscue=True,
     )
+    # Pin the phoneme alphabet to SAPI so the codes Azure returns (e.g. "th",
+    # "dh", "sh") match the anchor table in phoneme_hints. The default can vary
+    # by locale/model; without this, voiced "th" can come back as IPA and slip
+    # past our hint mapping, so "th" mistakes never get coached.
+    try:
+        pa_config.phoneme_alphabet = "SAPI"
+    except Exception:
+        pass
     # Prosody scoring is opt-in and only available for some locales.
     try:
         pa_config.enable_prosody_assessment()

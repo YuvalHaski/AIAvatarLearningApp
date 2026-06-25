@@ -30,14 +30,35 @@ def resolve_locale(language: str | None) -> str:
         return DEFAULT_LOCALE
     return _LOCALE_MAP.get(language.strip().lower(), DEFAULT_LOCALE)
 
+# Silence padded around the speech, in seconds. The Android recorder calls
+# MediaRecorder.stop() the instant the user releases the button, which clips
+# the tail off the final word. With no trailing silence Azure can't see the
+# word's full release, so it segments the last word short and scores it low.
+# Padding both ends gives Azure clean boundaries to assess against.
+_LEAD_SILENCE_SEC = "0.3"
+_TRAIL_SILENCE_SEC = "0.8"
+
+
 def normalize_to_wav(audio_bytes: bytes) -> bytes:
-    """Decode audio and re-encode as 16 kHz mono 16-bit PCM WAV using direct FFmpeg."""
+    """Decode audio and re-encode as 16 kHz mono 16-bit PCM WAV using direct FFmpeg.
+
+    A short pad of silence is added before and after the speech so Azure's
+    Pronunciation Assessment can segment the first and last words cleanly
+    (see the constants above).
+    """
     ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+
+    # adelay prepends leading silence; apad appends trailing silence.
+    pad_filter = (
+        f"adelay={int(float(_LEAD_SILENCE_SEC) * 1000)}:all=1,"
+        f"apad=pad_dur={_TRAIL_SILENCE_SEC}"
+    )
 
     # Build the direct FFmpeg command
     command = [
         ffmpeg_exe,
         "-i", "pipe:0",           # Read input from stdin
+        "-af", pad_filter,        # Pad silence on both ends for clean segmentation
         "-f", "wav",              # Force output format to WAV
         "-acodec", "pcm_s16le",   # Audio codec: 16-bit PCM
         "-ac", TARGET_CHANNELS,   # Channels: 1 (Mono)

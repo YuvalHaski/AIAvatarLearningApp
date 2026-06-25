@@ -35,6 +35,10 @@ from app.schemas.asr import AsrResult, PhonemeScore, PronunciationScores, WordRe
 from app.services.feedback.alignment import tokenize
 from app.services.feedback.analysis import analyze
 from app.services.feedback.generator import build_model_messages
+from app.services.feedback.phoneme_hints import (
+    PHONEME_TRIGGERS as _PHONEME_TRIGGERS,
+    plausible_weak_phonemes as _plausible_weak_phonemes,
+)
 
 
 _PRONUNCIATION_FILE = Path(__file__).parent / "sentences_pronunciation.txt"
@@ -86,33 +90,6 @@ def load_target_sentences(sentences_file: str | None) -> list[str]:
             unique.append(text)
     return unique
 
-# Commonly-difficult phonemes we may flag as "weak", paired with the orthography
-# that produces them. We only assign a phoneme to a word if that word's spelling
-# actually contains the trigger — otherwise the training data ends up saying
-# things like "weak 'th' sound in 'soup'", which teaches the model nonsense.
-_PHONEME_TRIGGERS: list[tuple[str, str]] = [
-    ("th", "th"),
-    ("sh", "sh"),
-    ("ch", "ch"),
-    ("ng", "ng"),
-    ("r", "r"),
-    ("l", "l"),
-    ("v", "v"),
-    ("w", "w"),
-    ("z", "z"),
-]
-
-
-def _plausible_weak_phonemes(word: str) -> list[str]:
-    """Phonemes whose orthographic trigger appears in `word`."""
-    w = word.lower()
-    found = [ph for ph, trigger in _PHONEME_TRIGGERS if trigger in w]
-    # "s" only when not part of "sh" (which we already covered).
-    if "s" in w and "sh" not in w:
-        found.append("s")
-    return found
-
-
 def _pick_mispronunciation(tokens: list[str]) -> tuple[int | None, list[str] | None]:
     """Pick a word index + a weak phoneme set that actually fits that word."""
     eligible = [(i, _plausible_weak_phonemes(t)) for i, t in enumerate(tokens)]
@@ -121,6 +98,18 @@ def _pick_mispronunciation(tokens: list[str]) -> tuple[int | None, list[str] | N
         return None, None
     i, candidates = random.choice(eligible)
     return i, [random.choice(candidates)]
+
+
+def _pick_mispronunciations(
+    tokens: list[str], n: int
+) -> list[tuple[int, list[str]]]:
+    """Pick up to `n` distinct word indices that each have a fitting weak
+    phoneme. Used to synthesize attempts with several mispronunciations at once
+    — the multi-error case the model previously dropped words on."""
+    eligible = [(i, _plausible_weak_phonemes(t)) for i, t in enumerate(tokens)]
+    eligible = [(i, cands) for i, cands in eligible if cands]
+    random.shuffle(eligible)
+    return [(i, [random.choice(cands)]) for i, cands in eligible[:n]]
 
 
 def _pick_pattern(tokens: list[str]) -> tuple[list[int], str | None]:
@@ -254,6 +243,37 @@ def synthesize(target: str) -> list[AsrResult]:
             words=_words(half, accuracy=50),
         )
     )
+
+    # 8. Hard combo: a substitution PLUS two or three mispronounced words, with
+    #    every other word still present. This is the case the model handled
+    #    worst (it dropped the mispronunciations when a "louder" error was also
+    #    there), so we deliberately over-represent it in the training mix.
+    combo = _pick_mispronunciations(tokens, 3)
+    if len(combo) >= 2:
+        mis_indices = {i for i, _ in combo}
+        sub_candidates = [i for i in range(len(tokens)) if i not in mis_indices]
+        if sub_candidates:
+            sub_i = random.choice(sub_candidates)
+            recognized = list(tokens)
+            recognized[sub_i] = "something"
+            combo_words = _words(tokens, accuracy=85)
+            for i, weak in combo:
+                combo_words[i] = WordResult(
+                    word=tokens[i], accuracy_score=45,
+                    error_type="Mispronunciation",
+                    phonemes=[PhonemeScore(phoneme=weak[0], accuracy_score=22)],
+                )
+            combo_words[sub_i] = WordResult(
+                word="something", accuracy_score=88, error_type="None",
+                phonemes=[PhonemeScore(phoneme="g", accuracy_score=88)],
+            )
+            results.append(
+                AsrResult(
+                    recognized_text=" ".join(recognized),
+                    scores=_scores(55, 70, 95),
+                    words=combo_words,
+                )
+            )
     return results
 
 
