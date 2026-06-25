@@ -76,7 +76,6 @@ def get_lesson_details(db: Session, lesson_id: str, user_id: str) -> Optional[Di
         "id": lesson.id,
         "title": lesson.title,
         "description": lesson.description or "",
-        "icon": lesson.icon,
         "sentences_count": sentences_count,
         "completed_sentences": completed_sentences
     }

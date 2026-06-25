@@ -604,8 +604,7 @@ def seed_database():
                         category_id=category_id,
                         title=lesson_data["title"],
                         description=lesson_data["description"],
-                        difficulty=lesson_data["difficulty"],
-                        icon=""
+                        difficulty=lesson_data["difficulty"]
                     )
                     db.add(new_lesson)
 
