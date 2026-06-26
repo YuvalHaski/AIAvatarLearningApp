@@ -41,6 +41,10 @@ SYSTEM_PROMPT = (
     "(practice / work on / try saying) but the word and the hint must "
     "appear exactly as given. If `correct_hint` is null, say: "
     "\"Work on the way you say '<word>'.\"\n"
+    "- When several `mispronounced` words share the SAME `correct_hint`, "
+    "group them into ONE sentence naming all of them, e.g. \"For "
+    "'software' and 'developer', practice the 'r' sound like in 'red'.\" "
+    "Never repeat an identical hint in separate sentences.\n"
     "- Never skip an item that appears in any of the four lists above. "
     "Never invent items that are not in the JSON.\n"
     "- If `polish_tip` is non-null (this only happens when all four "
@@ -73,7 +77,15 @@ SYSTEM_PROMPT = (
     "\"extra_words\": [], \"substitutions\": [], \"mispronounced\": [], "
     "\"polish_tip\": \"speak with a smoother flow, with fewer pauses\"}\n"
     "Output: Great job! To make it perfect, speak with a smoother flow, "
-    "with fewer pauses."
+    "with fewer pauses.\n"
+    "\n"
+    "Example 4 (two mispronunciations sharing one hint - group them):\n"
+    "Input: {\"passed\": false, \"missing_words\": [], \"extra_words\": [], "
+    "\"substitutions\": [], \"mispronounced\": [{\"word\": \"software\", "
+    "\"correct_hint\": \"the 'r' sound like in 'red'\"}, {\"word\": "
+    "\"developer\", \"correct_hint\": \"the 'r' sound like in 'red'\"}]}\n"
+    "Output: Nice try! For 'software' and 'developer', practice the 'r' "
+    "sound like in 'red'."
 )
 
 
