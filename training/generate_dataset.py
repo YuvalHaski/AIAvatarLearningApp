@@ -24,13 +24,12 @@ import argparse
 import json
 import random
 import sys
+import time
 from pathlib import Path
 
 # Allow `from app...` when run from the repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.core.database import SessionLocal
-from app.models.domain import Sentence
 from app.schemas.asr import AsrResult, PhonemeScore, PronunciationScores, WordResult
 from app.services.feedback.alignment import tokenize
 from app.services.feedback.analysis import analyze
@@ -42,6 +41,11 @@ from app.services.feedback.phoneme_hints import (
 
 
 _PRONUNCIATION_FILE = Path(__file__).parent / "sentences_pronunciation.txt"
+
+# Seconds to wait between GPT calls. Each call is ~700 tokens, and the tier-1
+# OpenAI limit is 30k tokens/min (~43 calls/min), so ~1.6s keeps us safely
+# under it without relying on retry/backoff for the steady state.
+_THROTTLE_SEC = 1.6
 
 
 def _read_sentences_file(path: Path) -> list[str]:
@@ -69,6 +73,11 @@ def load_target_sentences(sentences_file: str | None) -> list[str]:
     if sentences_file:
         raw = _read_sentences_file(Path(sentences_file))
     else:
+        # Imported lazily so the module stays usable in environments without a
+        # DB / sqlalchemy (e.g. Colab), where sentences come from --sentences-file.
+        from app.core.database import SessionLocal
+        from app.models.domain import Sentence
+
         with SessionLocal() as db:
             raw = [row[0] for row in db.query(Sentence.text).all() if row[0]]
 
@@ -153,7 +162,12 @@ def _words(tokens, *, accuracy=96, mispron_index=None, weak_phonemes=None):
             words.append(
                 WordResult(
                     word=tok, accuracy_score=accuracy, error_type="None",
-                    phonemes=[PhonemeScore(phoneme="g", accuracy_score=accuracy)],
+                    # Filler phoneme is always strong so it never leaks into a
+                    # word's weak_phonemes. A low-scoring word (e.g. the severe
+                    # attempt) is still flagged by its word score, and analysis
+                    # then derives a real hint from the word's spelling instead
+                    # of a meaningless "g"/None.
+                    phonemes=[PhonemeScore(phoneme="g", accuracy_score=96)],
                 )
             )
     return words
@@ -274,6 +288,128 @@ def synthesize(target: str) -> list[AsrResult]:
                     words=combo_words,
                 )
             )
+
+    # 9. Borderline accent: one word scores just under the mispronounced cutoff
+    #    with ErrorType "None" — Azure's lenient verdict on a clear-but-accented
+    #    word (the real "Israel"=79 / "software"=82 case). The raised threshold
+    #    still flags it, and with no single weak phoneme the model must coach it
+    #    from the word's orthographic anchor (e.g. the 'r' in 'red').
+    border_idx, _ = _pick_mispronunciation(tokens)
+    if border_idx is not None:
+        border_words = _words(tokens, accuracy=95)
+        border_words[border_idx] = WordResult(
+            word=tokens[border_idx], accuracy_score=82, error_type="None",
+            phonemes=[PhonemeScore(phoneme="g", accuracy_score=82)],
+        )
+        results.append(
+            AsrResult(
+                recognized_text=target,
+                scores=_scores(88, 90, 100, prosody=80),
+                words=border_words,
+            )
+        )
+
+    # 10. Subtle weak sound: Azure flags the word (Mispronunciation) but only one
+    #     phoneme is mildly off (~78), just under the phoneme cutoff. Teaches the
+    #     model to still name the specific sound instead of a generic line.
+    subtle_idx, subtle_weak = _pick_mispronunciation(tokens)
+    if subtle_idx is not None:
+        subtle_words = _words(tokens, accuracy=92)
+        subtle_words[subtle_idx] = WordResult(
+            word=tokens[subtle_idx], accuracy_score=88,
+            error_type="Mispronunciation",
+            phonemes=[PhonemeScore(phoneme=subtle_weak[0], accuracy_score=78)],
+        )
+        results.append(
+            AsrResult(
+                recognized_text=target,
+                scores=_scores(84, 88, 100, prosody=82),
+                words=subtle_words,
+            )
+        )
+
+    # 11. Clean but not perfect: every word is fine, yet a sub-score (here
+    #     prosody) sits below 95 so the score isn't 100. This is the real
+    #     "Excellent — try to sound more fluent" case. It yields a passed report
+    #     whose only feedback is a single polish tip, teaching the model to
+    #     praise + give ONE gentle tip WITHOUT inventing word errors.
+    results.append(
+        AsrResult(
+            recognized_text=target,
+            scores=_scores(94, 90, 100, prosody=76),
+            words=_words(tokens, accuracy=94),
+        )
+    )
+
+    # 12. Two missing words (not a severe attempt): drop two spread-out words
+    #     but keep the rest intact. Teaches naming MULTIPLE missing words.
+    if len(tokens) >= 5:
+        drop_a, drop_b = 1, len(tokens) - 2
+        kept2 = [t for i, t in enumerate(tokens) if i not in (drop_a, drop_b)]
+        results.append(
+            AsrResult(
+                recognized_text=" ".join(kept2),
+                scores=_scores(80, 78, 65),
+                words=_words(kept2, accuracy=92),
+            )
+        )
+
+    # 13. Missing word PLUS a mispronounced word — a very common real combo,
+    #     distinct from scenario 8 (which pairs a substitution with mispron).
+    mm_idx, mm_weak = _pick_mispronunciation(tokens)
+    if mm_idx is not None and len(tokens) >= 4:
+        drop_i = 0 if mm_idx != 0 else len(tokens) - 1
+        kept3 = [t for i, t in enumerate(tokens) if i != drop_i]
+        mis_in_kept = mm_idx if mm_idx < drop_i else mm_idx - 1
+        results.append(
+            AsrResult(
+                recognized_text=" ".join(kept3),
+                scores=_scores(66, 76, 80),
+                words=_words(
+                    kept3, accuracy=90,
+                    mispron_index=mis_in_kept, weak_phonemes=mm_weak,
+                ),
+            )
+        )
+
+    # 14. Last word mispronounced — explicitly exercises the final word, the
+    #     position most affected by Azure segmentation and the one the
+    #     trailing-silence fix targets.
+    last_eligible = next(
+        (i for i in range(len(tokens) - 1, -1, -1)
+         if _plausible_weak_phonemes(tokens[i])),
+        None,
+    )
+    if last_eligible is not None:
+        lw = _plausible_weak_phonemes(tokens[last_eligible])[:1]
+        results.append(
+            AsrResult(
+                recognized_text=target,
+                scores=_scores(72, 85, 100),
+                words=_words(
+                    tokens, accuracy=92,
+                    mispron_index=last_eligible, weak_phonemes=lw,
+                ),
+            )
+        )
+
+    # 15. Disfluency + mispronunciation: the learner inserts a filler word AND
+    #     mispronounces a real one. Distinct from scenario 8 (substitution).
+    ex_idx, ex_weak = _pick_mispronunciation(tokens)
+    if ex_idx is not None:
+        extended2 = tokens[:1] + ["um"] + tokens[1:]
+        mis_in_ext = ex_idx if ex_idx == 0 else ex_idx + 1
+        results.append(
+            AsrResult(
+                recognized_text=" ".join(extended2),
+                scores=_scores(68, 72, 100),
+                words=_words(
+                    extended2, accuracy=90,
+                    mispron_index=mis_in_ext, weak_phonemes=ex_weak,
+                ),
+            )
+        )
+
     return results
 
 
@@ -320,33 +456,61 @@ def main() -> None:
             "--sentences-file pointing at a non-empty text file."
         )
 
+    # Build the full, deterministic list of work items first (no API calls).
+    # Each item is the chat messages WITHOUT the assistant turn. Doing this up
+    # front is what makes the run resumable: a crash (e.g. an OpenAI rate
+    # limit) can be continued by simply re-running — the fixed seed reproduces
+    # the exact same item order, so we skip the ones already written.
+    work: list[list[dict]] = []
+    for target in target_sentences:
+        for asr in synthesize(target):
+            work.append(build_model_messages(analyze(target, asr)))
+            if args.limit and len(work) >= args.limit:
+                break
+        if args.limit and len(work) >= args.limit:
+            break
+
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    progress_path = out_dir / "_progress.jsonl"
+
     client = None
     if not args.no_bootstrap:
         from openai import OpenAI
-        client = OpenAI()
+        # max_retries lets the SDK back off on the occasional transient 429;
+        # the throttle below keeps us under the steady-state TPM ceiling.
+        client = OpenAI(max_retries=6, timeout=60)
 
-    samples: list[dict] = []
-    total = len(target_sentences)
-    for i, target in enumerate(target_sentences, start=1):
-        print(f"[{i}/{total}] {target}", flush=True)
-        for asr in synthesize(target):
-            report = analyze(target, asr)
-            messages = build_model_messages(report)
+    done = 0
+    if progress_path.exists():
+        done = sum(1 for _ in progress_path.open(encoding="utf-8"))
+        if done:
+            print(f"resuming: {done}/{len(work)} samples already generated",
+                  flush=True)
+
+    with progress_path.open("a", encoding="utf-8") as out:
+        for idx in range(done, len(work)):
+            messages = work[idx]
             feedback = "" if args.no_bootstrap else bootstrap_feedback(messages, client)
-            samples.append({"messages": messages + [
+            sample = {"messages": messages + [
                 {"role": "assistant", "content": feedback}
-            ]})
-            if args.limit and len(samples) >= args.limit:
-                break
-        if args.limit and len(samples) >= args.limit:
-            break
+            ]}
+            out.write(json.dumps(sample, ensure_ascii=False) + "\n")
+            out.flush()
+            print(f"[{idx + 1}/{len(work)}]", flush=True)
+            if not args.no_bootstrap:
+                time.sleep(_THROTTLE_SEC)
 
+    # Every item generated — load the full journal back, shuffle, split, write.
+    samples = [
+        json.loads(line)
+        for line in progress_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
     random.shuffle(samples)
     n_val = int(len(samples) * args.val_fraction)
     val, train = samples[:n_val], samples[n_val:]
 
-    out_dir = Path(args.out)
-    out_dir.mkdir(parents=True, exist_ok=True)
     for name, rows in (("train", train), ("val", val)):
         path = out_dir / f"{name}.jsonl"
         with path.open("w", encoding="utf-8") as fh:
@@ -354,10 +518,11 @@ def main() -> None:
                 fh.write(json.dumps(row, ensure_ascii=False) + "\n")
         print(f"wrote {len(rows)} samples -> {path}")
 
+    progress_path.unlink()  # clean up the resume journal on success
+
     print(
-        "\nNext: hand-curate training/data/train.jsonl - fix tone, enforce "
-        "brevity, and DELETE any sample whose feedback mentions an error not "
-        "present in the user message. Aim for ~800-1500 curated pairs."
+        "\nNext: run scripts/curate_dataset.py to drop any sample whose "
+        "feedback omits a required word, then review train.jsonl."
     )
 
 

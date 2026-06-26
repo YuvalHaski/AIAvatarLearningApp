@@ -6,10 +6,11 @@ Removes a row when its assistant reply:
     that isn't actually in the user payload.
   - Uses negative markers ("missed", "wrong", "instead", ...) when the user
     payload has no errors at all ("clean-when-perfect" violation).
-  - Is too long (> 350 chars or > 5 sentences) — system prompt asks for 2-4
-    short sentences.
+  - Is too long (> 380 chars or > 6 sentences) — system prompt asks for 2-5
+    short sentences; the slack allows rich multi-error attempts (praise +
+    missing + substitution + a couple of distinct-sound hints).
   - Contains markdown (bold, italic, headers, bullet/numbered lists).
-  - Repeats the same 3+-word phrase in adjacent positions.
+  - Repeats the same 4+-word phrase in adjacent positions.
 
 The originals are backed up to *.jsonl.original before the curated versions
 overwrite the source files. Run from the repo root:
@@ -66,11 +67,18 @@ def _required_words(payload: dict) -> list[str]:
 
 
 def _has_repetition(text: str) -> bool:
-    """Flag if any 3-word phrase appears twice in close proximity."""
+    """Flag if any 4-word phrase appears twice in close proximity.
+
+    Uses 4-grams (not 3) so that two *distinct* anchor hints, which share the
+    "<sound> sound like in <word>" template, don't collide: "the 'th' sound
+    like in 'thin'" and "the 'r' sound like in 'red'" share the 3-gram "sound
+    like in" but no 4-gram. Same-sound words are grouped into one sentence by
+    the prompt, so genuine duplication (the same hint twice) is still caught.
+    """
     tokens = re.findall(r"\w+", text.lower())
     seen: dict[tuple[str, ...], int] = {}
-    for i in range(len(tokens) - 2):
-        phrase = tuple(tokens[i : i + 3])
+    for i in range(len(tokens) - 3):
+        phrase = tuple(tokens[i : i + 4])
         if phrase in seen and (i - seen[phrase]) < 15:
             return True
         seen[phrase] = i
@@ -85,11 +93,11 @@ def _is_bad(payload: dict, feedback: str) -> str | None:
     if _MARKDOWN_RE.search(feedback):
         return "markdown formatting"
 
-    if len(feedback) > 350:
+    if len(feedback) > 380:
         return "too long (chars)"
 
     sentence_count = len([s for s in _SENTENCE_SPLIT_RE.split(feedback) if s.strip()])
-    if sentence_count > 5:
+    if sentence_count > 6:
         return "too long (sentences)"
 
     fb = feedback.lower()
