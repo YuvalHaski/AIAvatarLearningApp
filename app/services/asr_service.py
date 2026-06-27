@@ -29,6 +29,25 @@ def _read_pcm(wav_bytes: bytes) -> tuple[bytes, int, int, int]:
     return pcm, channels, sample_width, frame_rate
 
 
+def _nbest_candidates(raw_phoneme: dict) -> list[str]:
+    """Azure NBestPhonemes for one position: the phonemes Azure thinks were
+    actually produced, ordered most-likely first.
+
+    Returned only when nbest_phoneme_count is requested (see assess_pronunciation).
+    Sorted by Score descending defensively in case Azure's order ever changes;
+    drops empty/score-less entries so callers can trust candidates[0] is the
+    best guess of what the learner really said."""
+    assessment = raw_phoneme.get("PronunciationAssessment") or {}
+    nbest = assessment.get("NBestPhonemes") or []
+    scored = [
+        (c.get("Phoneme", ""), c.get("Score"))
+        for c in nbest
+        if c.get("Phoneme") and c.get("Score") is not None
+    ]
+    scored.sort(key=lambda ps: ps[1], reverse=True)
+    return [phoneme for phoneme, _ in scored]
+
+
 def _parse_words(json_result: str) -> list[WordResult]:
     """Parse per-word / per-phoneme detail from Azure's JSON payload."""
     try:
@@ -49,6 +68,7 @@ def _parse_words(json_result: str) -> list[WordResult]:
                 accuracy_score=(ph.get("PronunciationAssessment") or {}).get(
                     "AccuracyScore", 0.0
                 ),
+                candidates=_nbest_candidates(ph),
             )
             for ph in (raw_word.get("Phonemes") or [])
         ]
@@ -107,6 +127,15 @@ def assess_pronunciation(
     # past our hint mapping, so "th" mistakes never get coached.
     try:
         pa_config.phoneme_alphabet = "SAPI"
+    except Exception:
+        pass
+    # Ask Azure for its top-N guesses of the phoneme actually produced at each
+    # position (not just an accuracy score for the expected one). Stage 1 uses
+    # candidates[0] to (a) drop positions where the learner hit the target sound
+    # — the low-score noise that made hints lead with the wrong sound — and
+    # (b) say "you said X instead of Y" when they substituted a different sound.
+    try:
+        pa_config.nbest_phoneme_count = 5
     except Exception:
         pass
     # Prosody scoring is opt-in and only available for some locales.
