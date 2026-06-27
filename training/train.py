@@ -32,7 +32,7 @@ def main() -> None:
     parser.add_argument("--base-model", default="microsoft/Phi-3.5-mini-instruct")
     parser.add_argument("--data", default="training/data")
     parser.add_argument("--out", default="training/out")
-    parser.add_argument("--epochs", type=float, default=3.0)
+    parser.add_argument("--epochs", type=float, default=5.0)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--lr", type=float, default=2e-4)
     args = parser.parse_args()
@@ -68,8 +68,13 @@ def main() -> None:
     )
 
     lora_config = LoraConfig(
-        r=16,
-        lora_alpha=32,
+        # Raised from r=16/alpha=32: the previous adapter under-fit the
+        # "be terse, then stop" behavior, so base Phi-3.5's generic tutor
+        # voice leaked into the tail of harder responses (rambling about
+        # syllables/pacing the training data never contained). More capacity
+        # + more epochs lets the adapter dominate that base tendency.
+        r=32,
+        lora_alpha=64,
         lora_dropout=0.05,
         bias="none",
         task_type="CAUSAL_LM",

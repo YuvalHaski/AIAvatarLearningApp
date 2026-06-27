@@ -1,3 +1,7 @@
+from contextlib import asynccontextmanager
+import threading
+
+import httpx
 from fastapi import FastAPI
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,6 +12,7 @@ from firebase_admin import credentials
 
 # API Routers imports
 from app.api.routes import categories, progress, lessons, asr
+from app.core.config import settings
 
 
 # Load environment variables
@@ -25,11 +30,45 @@ except ValueError:
     # App is already initialized (happens during uvicorn auto-reloads)
     pass
 
+# ==========================================
+# FEEDBACK MODEL WARMUP
+# ==========================================
+def _warm_feedback_model() -> None:
+    """Preload the Stage 2 feedback model into Ollama so the first real request
+    is warm. A cold load reads ~2.3 GB from disk (~40s on this machine), so we
+    run it in a background thread to avoid blocking server startup. No-ops if the
+    model service isn't configured or is unreachable."""
+    if not settings.FEEDBACK_MODEL_URL:
+        return
+    url = settings.FEEDBACK_MODEL_URL.rstrip("/") + "/chat/completions"
+    try:
+        httpx.post(
+            url,
+            json={
+                "model": settings.FEEDBACK_MODEL_NAME,
+                "messages": [{"role": "user", "content": "ok"}],
+                "max_tokens": 1,
+            },
+            timeout=120.0,
+        )
+        print("Feedback model warmup complete.")
+    except Exception as exc:
+        print(f"Feedback model warmup skipped: {exc}")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Load the model in the background; uvicorn starts serving immediately.
+    threading.Thread(target=_warm_feedback_model, daemon=True).start()
+    yield
+
+
 # Initialize the FastAPI application
 app = FastAPI(
     title="AI Learning App API",
     description="Backend for the AI language learning Android application.",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan,
 )
 
 # ==========================================

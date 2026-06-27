@@ -209,6 +209,10 @@ def generate_feedback(report: ErrorReport) -> str:
         text = (
             response.json()["choices"][0]["message"]["content"] or ""
         ).strip()
+        # TEMP DEBUG: raw model output before the verifier appends anything.
+        # If this rambles about syllables/toning, the regression is the model;
+        # if it's clean but the final text isn't, it's _ensure_coverage.
+        print(f"[FB DEBUG] raw model = {text!r}")
         if not text:
             return _ensure_coverage(templates.render_feedback(report), report)
         return _ensure_coverage(text, report)

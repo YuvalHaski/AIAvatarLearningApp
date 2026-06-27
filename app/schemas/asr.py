@@ -11,9 +11,16 @@ from pydantic import BaseModel, Field
 # ==========================================================================
 
 class PhonemeScore(BaseModel):
-    """A single phoneme and how accurately it was pronounced (0-100)."""
+    """A single (expected) phoneme and how accurately it was pronounced (0-100)."""
     phoneme: str
     accuracy_score: float
+    # Azure NBestPhonemes: the phonemes Azure thinks the learner ACTUALLY
+    # produced at this position, highest-confidence first. Empty when NBest is
+    # off or the locale doesn't support it. When the top entry differs from
+    # `phoneme`, the learner substituted a sound (the basis for "you said X
+    # instead of Y"); when it equals `phoneme`, they hit the target sound and
+    # the low score is noise we can filter out.
+    candidates: list[str] = Field(default_factory=list)
 
 
 class WordResult(BaseModel):
