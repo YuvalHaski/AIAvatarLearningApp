@@ -19,7 +19,10 @@ from app.services.feedback import scoring
 from app.services.feedback.alignment import align, tokenize
 from app.services.feedback.phoneme_hints import (
     canonical_phoneme,
+    contrast_hint_for,
     correct_hint_for,
+    has_anchor,
+    is_vowel,
     plausible_weak_phonemes,
 )
 
@@ -63,23 +66,49 @@ _POLISH_TIPS: dict[str, str] = {
 }
 
 
-def _weak_phonemes(word: WordResult) -> list[str]:
-    """Canonical codes for the phonemes Azure scored below the weak threshold,
-    worst (lowest accuracy) first so the hint leads with the biggest problem
-    sound instead of whichever weak sound happens to come first in the word."""
-    scored = [
-        (canonical_phoneme(ph.phoneme), ph.accuracy_score)
-        for ph in word.phonemes
-        if ph.accuracy_score < PHONEME_WEAK_THRESHOLD and ph.phoneme
-    ]
-    scored.sort(key=lambda cs: cs[1])
-    ordered: list[str] = []
+def _weak_sound_pairs(word: WordResult) -> list[tuple[str, str | None]]:
+    """(expected, produced|None) for the phonemes worth coaching, worst
+    (lowest accuracy) first so the hint leads with the biggest problem sound.
+
+    A phoneme is coachable when Azure scored it below the weak threshold AND its
+    top NBestPhonemes candidate isn't already the expected sound. Using NBest
+    this way (a) filters positions the learner actually hit — the low-score
+    noise that used to make hints lead with a sound the learner said correctly —
+    and (b) records what they produced instead, for a "you said X not Y"
+    contrast. `produced` is None when NBest is unavailable (older data /
+    unsupported locale), so the hint degrades to a plain anchor."""
+    scored: list[tuple[str, str | None, float]] = []
+    for ph in word.phonemes:
+        if not ph.phoneme or ph.accuracy_score >= PHONEME_WEAK_THRESHOLD:
+            continue
+        expected = canonical_phoneme(ph.phoneme)
+        # Only coach sounds we can name. Drops schwa ('ax'), glides ('y'), and
+        # unanchored consonants ('k', ...) so they never pollute weak_phonemes
+        # or fabricate a "recurring 'ax' difficulty" pattern.
+        if not expected or not has_anchor(expected):
+            continue
+        produced = canonical_phoneme(ph.candidates[0]) if ph.candidates else ""
+        if produced:
+            # Azure's best guess of what was produced IS the expected sound: the
+            # learner hit the target, the low score is noise — don't coach it.
+            if produced == expected:
+                continue
+            # A vowel slot reported as a consonant (or vice versa) is Azure's
+            # segmentation collapsing on a badly-said word, not a real swap
+            # (e.g. menu's 'uw' came back as 'n'). Drop it so the hint leads
+            # with the genuine sound error instead of this noise.
+            if is_vowel(expected) != is_vowel(produced):
+                continue
+        scored.append((expected, produced or None, ph.accuracy_score))
+    scored.sort(key=lambda eps: eps[2])
     seen: set[str] = set()
-    for code, _ in scored:
-        if code and code not in seen:
-            seen.add(code)
-            ordered.append(code)
-    return ordered
+    pairs: list[tuple[str, str | None]] = []
+    for expected, produced, _ in scored:
+        if expected in seen:
+            continue
+        seen.add(expected)
+        pairs.append((expected, produced))
+    return pairs
 
 
 def _find_mispronounced(words: list[WordResult]) -> list[MispronouncedWord]:
@@ -92,20 +121,35 @@ def _find_mispronounced(words: list[WordResult]) -> list[MispronouncedWord]:
         )
         # Omission / Insertion are handled by text alignment, not here.
         if is_mispronounced and word.error_type not in ("Omission", "Insertion"):
-            weak = _weak_phonemes(word)
-            # Azure sometimes flags a word without any single phoneme dropping
-            # below the weak threshold (typical for "th"). Derive the hint from
-            # the difficult sounds the spelling contains so the learner still
-            # gets a concrete target instead of a generic "work on this word".
-            # `weak_phonemes` itself stays Azure-only so pattern detection isn't
-            # polluted by orthographic guesses.
-            hint_phonemes = weak or plausible_weak_phonemes(word.word)
+            pairs = _weak_sound_pairs(word)
+            weak = [expected for expected, _ in pairs]
+            if pairs:
+                # Coach the actually-wrong sounds, naming what was said instead
+                # ("the 'e' sound like in 'bed', not the 'a' sound").
+                hint = contrast_hint_for(pairs)
+            else:
+                # Azure flagged the word but no single phoneme is weak-and-wrong
+                # (typical for "th", or when every weak phoneme was actually hit).
+                # Derive the hint from the difficult sounds the spelling contains
+                # so the learner still gets a concrete target. `weak_phonemes`
+                # stays Azure-only so pattern detection isn't polluted by these
+                # orthographic guesses.
+                hint = correct_hint_for(plausible_weak_phonemes(word.word))
+            # Suppress words flagged ONLY by the lenient acc<85 threshold that
+            # have no coachable sound to point at. Azure scores unstressed
+            # function words like "the" in the low 80s on a schwa we can't
+            # anchor, which otherwise becomes generic "work on this word"
+            # noise. Words Azure itself marks "Mispronunciation" are always
+            # kept (it's confident they're wrong) even without a hint.
+            soft_only = word.error_type != "Mispronunciation"
+            if soft_only and hint is None:
+                continue
             result.append(
                 MispronouncedWord(
                     word=word.word,
                     accuracy_score=word.accuracy_score,
                     weak_phonemes=weak,
-                    correct_hint=correct_hint_for(hint_phonemes),
+                    correct_hint=hint,
                 )
             )
     return result

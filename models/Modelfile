@@ -3,3 +3,4 @@ FROM phi3.5
 ADAPTER ./aiavatar-adapter.gguf
 
 PARAMETER temperature 0.3
+PARAMETER num_ctx 2048

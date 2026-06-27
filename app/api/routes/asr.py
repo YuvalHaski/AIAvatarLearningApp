@@ -14,7 +14,7 @@ from app.schemas.asr import AssessmentResponse
 from app.services.asr_service import AsrError, assess_pronunciation
 from app.services.audio_utils import normalize_to_wav, resolve_locale
 from app.services.feedback.analysis import analyze
-from app.services.feedback.generator import generate_feedback
+from app.services.feedback.generator import build_model_messages, generate_feedback
 from app.services.progress_service import record_attempt
 
 router = APIRouter()
@@ -73,9 +73,21 @@ async def asr(
     print(f"[ASR DEBUG] scores  = {asr_result.scores}")
     for w in asr_result.words:
         print(f"[ASR DEBUG]   word={w.word!r:20} err={w.error_type:18} acc={w.accuracy_score}")
+        for ph in w.phonemes:
+            # candidates[0] is Azure's best guess of what was ACTUALLY produced.
+            # If it differs from `ph.phoneme`, the vowel/consonant swap IS
+            # detectable even when the word aggregate stayed high.
+            print(
+                f"[ASR DEBUG]       ph={ph.phoneme!r:6} acc={ph.accuracy_score:>5} "
+                f"nbest={ph.candidates}"
+            )
 
     # Stage 1: deterministic analysis + scoring.
     report = analyze(target_sentence, asr_result)
+
+    # TEMP DEBUG: the exact JSON Stage 1 hands the model (mispronounced words,
+    # hints, polish_tip). This is the contract the model is supposed to follow.
+    print(f"[FB DEBUG] payload = {build_model_messages(report)[1]['content']}")
 
     # Stage 2: spoken feedback (fine-tuned model, template fallback).
     feedback_text = generate_feedback(report)
