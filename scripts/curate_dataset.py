@@ -58,11 +58,17 @@ def _required_words(payload: dict) -> list[str]:
 
     Mirrors the runtime verifier in generator._ensure_coverage so the model is
     curated against the exact contract it will be judged by at request time.
+    Extended to include the spelling-driven categories added in the taxonomy
+    expansion (silent letters, hard/soft-c, clusters) — the system prompt
+    requires the model to name each of those too.
     """
     required = list(payload.get("missing_words", []))
     required += list(payload.get("extra_words", []))
     required += [s["expected"] for s in payload.get("substitutions", [])]
     required += [m["word"] for m in payload.get("mispronounced", [])]
+    required += [e["word"] for e in payload.get("silent_letter_errors", [])]
+    required += [e["word"] for e in payload.get("hard_soft_c_errors", [])]
+    required += [e["word"] for e in payload.get("cluster_errors", [])]
     return [w for w in required if w]
 
 
@@ -124,6 +130,26 @@ def _is_bad(payload: dict, feedback: str) -> str | None:
         if m.get("correct_hint"):
             for q in re.findall(r"'([A-Za-z]+)'", m["correct_hint"]):
                 allowed.add(q.lower())
+    # Same rule for substitution sound_hints (minimal pairs) — the quoted
+    # anchor/phoneme labels there are contractually part of the reply.
+    for s in payload.get("substitutions", []):
+        if s.get("sound_hint"):
+            for q in re.findall(r"'([A-Za-z]+)'", s["sound_hint"]):
+                allowed.add(q.lower())
+    # Same for the new spelling-driven categories. Each error's `hint` is a
+    # full clause that the model must speak verbatim, so any words it quotes
+    # (silent letters, anchor spellings, cluster names) are legitimate.
+    for category in ("silent_letter_errors", "hard_soft_c_errors", "cluster_errors"):
+        for e in payload.get(category, []):
+            if e.get("word"):
+                allowed.add(e["word"].lower())
+            if e.get("silent_letter"):
+                allowed.add(e["silent_letter"].lower())
+            if e.get("cluster"):
+                allowed.add(e["cluster"].lower())
+            if e.get("hint"):
+                for q in re.findall(r"'([A-Za-z]+)'", e["hint"]):
+                    allowed.add(q.lower())
     invented = _quoted_words(feedback) - allowed
     if invented:
         return f"invented quoted words: {sorted(invented)}"

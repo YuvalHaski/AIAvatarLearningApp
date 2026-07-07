@@ -8,10 +8,13 @@ from collections import Counter
 
 from app.schemas.asr import (
     AsrResult,
+    ClusterError,
     ErrorReport,
     FeedbackPoint,
+    HardSoftCError,
     MispronouncedWord,
     PronunciationScores,
+    SilentLetterError,
     Substitution,
     WordResult,
 )
@@ -24,6 +27,12 @@ from app.services.feedback.phoneme_hints import (
     has_anchor,
     is_vowel,
     plausible_weak_phonemes,
+)
+from app.services.feedback.word_hints import (
+    cluster_hint_for,
+    hard_soft_c_for,
+    silent_letter_for,
+    sound_hint_for_substitution,
 )
 
 # A word counts as mispronounced below this accuracy score (0-100). Azure's
@@ -48,6 +57,10 @@ MAX_FRAMING_POINTS = 3
 # Safety cap on mispronunciations per attempt so the avatar response stays
 # a reasonable length even on a totally garbled sentence.
 MAX_MISPRONUNCIATION_POINTS = 4
+# Combined safety cap for silent-letter / hard-soft-c / cluster errors. These
+# are spelling-driven and rare per attempt; capping them together keeps the
+# avatar response short if a sentence happens to be dense with them.
+MAX_SPELLING_ERROR_POINTS = 3
 # When an attempt has no word-level errors but `final_score < 100`, the gap
 # comes from one of Azure's sub-scores being below this value. We pick the
 # weakest such sub-score and surface a single "polish" tip explaining why
@@ -155,6 +168,53 @@ def _find_mispronounced(words: list[WordResult]) -> list[MispronouncedWord]:
     return result
 
 
+def _split_spelling_errors(
+    mispronounced: list[MispronouncedWord],
+) -> tuple[
+    list[MispronouncedWord],
+    list[SilentLetterError],
+    list[HardSoftCError],
+    list[ClusterError],
+]:
+    """Route each flagged word into its most specific coaching category.
+
+    Preference order: silent letter → hard/soft-c → consonant cluster →
+    phoneme mispronunciation. Each word is coached in EXACTLY ONE category
+    so the avatar doesn't say two things about the same word. Detection
+    only fires when Azure already flagged the word — the curated tables
+    don't invent errors, they just re-label ones Azure already saw.
+    """
+    remaining: list[MispronouncedWord] = []
+    silent: list[SilentLetterError] = []
+    hard_soft: list[HardSoftCError] = []
+    clusters: list[ClusterError] = []
+
+    for word in mispronounced:
+        sl = silent_letter_for(word.word)
+        if sl is not None:
+            letter, hint = sl
+            silent.append(SilentLetterError(
+                word=word.word, silent_letter=letter, hint=hint,
+            ))
+            continue
+        hsc = hard_soft_c_for(word.word)
+        if hsc is not None:
+            rule, hint = hsc
+            hard_soft.append(HardSoftCError(
+                word=word.word, rule=rule, hint=hint,
+            ))
+            continue
+        cl = cluster_hint_for(word.word)
+        if cl is not None:
+            cluster, hint = cl
+            clusters.append(ClusterError(
+                word=word.word, cluster=cluster, hint=hint,
+            ))
+            continue
+        remaining.append(word)
+    return remaining, silent, hard_soft, clusters
+
+
 def _detect_patterns(mispronounced: list[MispronouncedWord]) -> list[str]:
     """A phoneme that fails across multiple words is a recurring pattern."""
     counts: Counter[str] = Counter()
@@ -191,6 +251,9 @@ def _select_feedback_points(
     missing_words: list[str],
     substitutions: list[Substitution],
     mispronounced: list[MispronouncedWord],
+    silent_letters: list[SilentLetterError],
+    hard_soft_c: list[HardSoftCError],
+    clusters: list[ClusterError],
     extra_words: list[str],
     patterns: list[str],
     fluency: float,
@@ -209,10 +272,15 @@ def _select_feedback_points(
     for pattern in patterns:
         framing.append(FeedbackPoint(kind="pattern", priority=2, detail=pattern))
     for sub in substitutions:
+        # `detail` carries just the heard word now — templates.py picks the
+        # framing sentence based on whether sound_hint is populated. Minimal
+        # pairs (sound_hint set) render as "Your 'X' sounded more like 'Y'";
+        # general subs render as "You said 'Y' instead of 'X'".
         framing.append(
             FeedbackPoint(
                 kind="substitution", priority=2, word=sub.expected,
-                detail=f"said '{sub.heard}'",
+                detail=sub.heard,
+                sound_hint=sub.sound_hint,
             )
         )
     for word in extra_words:
@@ -238,7 +306,25 @@ def _select_feedback_points(
             FeedbackPoint(kind="mispronunciation", priority=3, word=word.word, detail=detail)
         )
 
-    points = framing + mispron_points
+    # Spelling-driven errors share one combined cap. Priority 3 puts them
+    # alongside phoneme mispronunciations so the avatar names all specific
+    # word issues before generic framing.
+    spelling_points: list[FeedbackPoint] = []
+    for err in silent_letters:
+        spelling_points.append(FeedbackPoint(
+            kind="silent_letter", priority=3, word=err.word, detail=err.hint,
+        ))
+    for err in hard_soft_c:
+        spelling_points.append(FeedbackPoint(
+            kind="hard_soft_c", priority=3, word=err.word, detail=err.hint,
+        ))
+    for err in clusters:
+        spelling_points.append(FeedbackPoint(
+            kind="cluster", priority=3, word=err.word, detail=err.hint,
+        ))
+    spelling_points = spelling_points[:MAX_SPELLING_ERROR_POINTS]
+
+    points = framing + mispron_points + spelling_points
 
     # No flagged errors but the score isn't perfect — surface a polish tip
     # so the learner can hear *why* they didn't get 100.
@@ -263,12 +349,27 @@ def analyze(target_sentence: str, asr: AsrResult) -> ErrorReport:
     missing_words = [op.target for op in ops if op.kind == "missing"]
     extra_words = [op.recognized for op in ops if op.kind == "extra"]
     substitutions = [
-        Substitution(expected=op.target, heard=op.recognized)
+        Substitution(
+            expected=op.target,
+            heard=op.recognized,
+            # If the (expected, heard) pair is a curated minimal pair, attach
+            # the sound_hint so the avatar can coach the ONE distinguishing
+            # phoneme instead of just naming the swap. None otherwise.
+            sound_hint=sound_hint_for_substitution(op.target, op.recognized),
+        )
         for op in ops
         if op.kind == "substitution"
     ]
 
-    mispronounced = _find_mispronounced(asr.words)
+    all_mispronounced = _find_mispronounced(asr.words)
+    # Route flagged words into their most specific category; each word is
+    # coached exactly once, in the most specific bucket that matches.
+    mispronounced, silent_letters, hard_soft_c, clusters = _split_spelling_errors(
+        all_mispronounced,
+    )
+    # Patterns only track pure phoneme-level recurring difficulties. Spelling
+    # errors don't contribute so we don't invent a fake "recurring 'k' pattern"
+    # from silent-letter words.
     patterns = _detect_patterns(mispronounced)
 
     final_score = scoring.compute_score(
@@ -285,6 +386,9 @@ def analyze(target_sentence: str, asr: AsrResult) -> ErrorReport:
         missing_words=missing_words,
         substitutions=substitutions,
         mispronounced=mispronounced,
+        silent_letters=silent_letters,
+        hard_soft_c=hard_soft_c,
+        clusters=clusters,
         extra_words=extra_words,
         patterns=patterns,
         fluency=asr.scores.fluency,
@@ -298,6 +402,9 @@ def analyze(target_sentence: str, asr: AsrResult) -> ErrorReport:
         extra_words=extra_words,
         substitutions=substitutions,
         mispronounced_words=mispronounced,
+        silent_letter_errors=silent_letters,
+        hard_soft_c_errors=hard_soft_c,
+        cluster_errors=clusters,
         patterns=patterns,
         final_score=final_score,
         is_passed=is_passed,

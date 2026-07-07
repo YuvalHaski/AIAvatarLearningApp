@@ -25,6 +25,7 @@ import json
 import random
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 # Allow `from app...` when run from the repo root.
@@ -38,14 +39,30 @@ from app.services.feedback.phoneme_hints import (
     PHONEME_TRIGGERS as _PHONEME_TRIGGERS,
     plausible_weak_phonemes as _plausible_weak_phonemes,
 )
+from app.services.feedback.word_hints import (
+    cluster_hint_for as _cluster_hint_for,
+    hard_soft_c_for as _hard_soft_c_for,
+    pick_confusable as _pick_confusable,
+    silent_letter_for as _silent_letter_for,
+    word_vowel_for as _word_vowel_for,
+    MINIMAL_PAIR_CONFUSABLES as _MINIMAL_PAIRS,
+)
 
 
 _PRONUNCIATION_FILE = Path(__file__).parent / "sentences_pronunciation.txt"
 
-# Seconds to wait between GPT calls. Each call is ~700 tokens, and the tier-1
-# OpenAI limit is 30k tokens/min (~43 calls/min), so ~1.6s keeps us safely
-# under it without relying on retry/backoff for the steady state.
-_THROTTLE_SEC = 1.6
+# Number of GPT calls to run in parallel. 2 concurrent × ~1s per gpt-4o-mini
+# response ≈ 2 req/sec × 780 tokens ≈ 94k TPM, well below tier-1 mini's 200k
+# TPM cap with headroom for bursty batches. Concurrency 3+ was chronically
+# saturating the window on tier 1 and triggering SDK-level backoff that
+# dragged sustained throughput to under 1 row/sec. On tier 2+ this can go to
+# 8-10.
+_CONCURRENCY = 2
+# Seconds to wait between batches when we hit a rate limit. Only applies to
+# the outer safety retry below — the SDK already retries with exponential
+# backoff (max_retries=6) on each individual call, this handles the case
+# where a whole batch runs the account TPM window dry.
+_RATE_LIMIT_SLEEP = 20.0
 
 
 def _read_sentences_file(path: Path) -> list[str]:
@@ -119,6 +136,35 @@ def _pick_mispronunciations(
     eligible = [(i, cands) for i, cands in eligible if cands]
     random.shuffle(eligible)
     return [(i, [random.choice(cands)]) for i, cands in eligible[:n]]
+
+
+def _find_confusable_word(
+    tokens: list[str], candidates: list[int] | None = None,
+) -> tuple[int | None, str | None]:
+    """Find (index, heard_word) for a token that has a curated confusable.
+
+    `candidates` restricts the search to specific indices; when None, all
+    tokens are eligible. Returns (None, None) when no token has a confusable
+    — callers should skip the substitution scenario rather than emit
+    "something" (the old bug this replaces)."""
+    indices = candidates if candidates is not None else list(range(len(tokens)))
+    random.shuffle(indices)
+    for i in indices:
+        result = _pick_confusable(tokens[i])
+        if result is not None:
+            heard, _ = result
+            return i, heard
+    return None, None
+
+
+def _find_word_matching(
+    tokens: list[str], predicate,
+) -> int | None:
+    """Return the index of the first token satisfying `predicate`, or None."""
+    hits = [i for i, t in enumerate(tokens) if predicate(t)]
+    if not hits:
+        return None
+    return random.choice(hits)
 
 
 def _pick_pattern(tokens: list[str]) -> tuple[list[int], str | None]:
@@ -207,15 +253,22 @@ def synthesize(target: str) -> list[AsrResult]:
         )
     )
 
-    # 4. One substitution.
-    swapped = list(tokens)
-    swapped[drop] = "something"
-    results.append(
-        AsrResult(
-            recognized_text=" ".join(swapped), scores=_scores(85, 82, 95),
-            words=_words(swapped, accuracy=86),
+    # 4. One substitution — with a phonetically PLAUSIBLE confusion word.
+    #    Old code used the literal token "something", which Azure would never
+    #    return. Now we search for any token in the sentence that has a
+    #    curated confusable (word_hints.pick_confusable) and swap it. When
+    #    the confusable is a minimal pair, Stage 1 will attach the sound_hint
+    #    automatically via sound_hint_for_substitution.
+    sub_idx, sub_heard = _find_confusable_word(tokens)
+    if sub_idx is not None and sub_heard is not None:
+        swapped = list(tokens)
+        swapped[sub_idx] = sub_heard
+        results.append(
+            AsrResult(
+                recognized_text=" ".join(swapped), scores=_scores(85, 82, 95),
+                words=_words(swapped, accuracy=86),
+            )
         )
-    )
 
     # 5. One mispronounced word. Skip if no word in the sentence has a
     #    plausible weak phoneme (otherwise we'd teach the model nonsense).
@@ -262,14 +315,16 @@ def synthesize(target: str) -> list[AsrResult]:
     #    every other word still present. This is the case the model handled
     #    worst (it dropped the mispronunciations when a "louder" error was also
     #    there), so we deliberately over-represent it in the training mix.
+    #    The substitution now uses a curated confusable — again no more
+    #    "something" placeholder.
     combo = _pick_mispronunciations(tokens, 3)
     if len(combo) >= 2:
         mis_indices = {i for i, _ in combo}
-        sub_candidates = [i for i in range(len(tokens)) if i not in mis_indices]
-        if sub_candidates:
-            sub_i = random.choice(sub_candidates)
+        available = [i for i in range(len(tokens)) if i not in mis_indices]
+        combo_sub_idx, combo_sub_heard = _find_confusable_word(tokens, available)
+        if combo_sub_idx is not None and combo_sub_heard is not None:
             recognized = list(tokens)
-            recognized[sub_i] = "something"
+            recognized[combo_sub_idx] = combo_sub_heard
             combo_words = _words(tokens, accuracy=85)
             for i, weak in combo:
                 combo_words[i] = WordResult(
@@ -277,8 +332,12 @@ def synthesize(target: str) -> list[AsrResult]:
                     error_type="Mispronunciation",
                     phonemes=[PhonemeScore(phoneme=weak[0], accuracy_score=22)],
                 )
-            combo_words[sub_i] = WordResult(
-                word="something", accuracy_score=88, error_type="None",
+            # The recognized word replaces the target at the sub index. Score
+            # it as a normally-recognized word (Azure returns the heard word
+            # cleanly — alignment turns it into a substitution via missing/
+            # extra pairing).
+            combo_words[combo_sub_idx] = WordResult(
+                word=combo_sub_heard, accuracy_score=88, error_type="None",
                 phonemes=[PhonemeScore(phoneme="g", accuracy_score=88)],
             )
             results.append(
@@ -410,18 +469,148 @@ def synthesize(target: str) -> list[AsrResult]:
             )
         )
 
+    # 16. Minimal-pair substitution — the target word is swapped for its
+    #     minimal-pair neighbor (sheep→ship, right→light, three→tree). Stage 1
+    #     will attach the sound_hint automatically, so the model learns to
+    #     coach the single distinguishing sound in addition to naming the
+    #     swap. This is the ceiling case in our existing memory (mild→make)
+    #     that the old pipeline had no realistic training for.
+    minimal_idx = _find_word_matching(
+        tokens, lambda t: t.lower() in _MINIMAL_PAIRS,
+    )
+    if minimal_idx is not None:
+        mp_result = _pick_confusable(tokens[minimal_idx])
+        if mp_result is not None:
+            mp_heard, _ = mp_result
+            mp_recognized = list(tokens)
+            mp_recognized[minimal_idx] = mp_heard
+            mp_words = _words(mp_recognized, accuracy=86)
+            results.append(
+                AsrResult(
+                    recognized_text=" ".join(mp_recognized),
+                    scores=_scores(76, 82, 90),
+                    words=mp_words,
+                )
+            )
+
+    # 17. Silent-letter mispronunciation — a sentence containing e.g. 'knife',
+    #     'walk', 'sign', 'hour'. Azure flags the word as a Mispronunciation
+    #     (learner pronounced the silent letter); Stage 1's
+    #     _split_spelling_errors then routes the word to silent_letter_errors
+    #     instead of the generic mispronounced list, and the model gets a
+    #     rule-based coaching hint.
+    sl_idx = _find_word_matching(
+        tokens, lambda t: _silent_letter_for(t) is not None,
+    )
+    if sl_idx is not None:
+        results.append(
+            AsrResult(
+                recognized_text=target,
+                scores=_scores(70, 80, 100),
+                words=_words(
+                    tokens, accuracy=88,
+                    mispron_index=sl_idx, weak_phonemes=["g"],
+                ),
+            )
+        )
+
+    # 18. Hard/soft-c mispronunciation — sentence contains 'city', 'cycle',
+    #     'receive', 'accept', etc. Same synthesis shape as silent-letter;
+    #     the routing table decides the category.
+    hsc_idx = _find_word_matching(
+        tokens, lambda t: _hard_soft_c_for(t) is not None,
+    )
+    if hsc_idx is not None:
+        results.append(
+            AsrResult(
+                recognized_text=target,
+                scores=_scores(70, 82, 100),
+                words=_words(
+                    tokens, accuracy=88,
+                    mispron_index=hsc_idx, weak_phonemes=["g"],
+                ),
+            )
+        )
+
+    # 19. Consonant-cluster mispronunciation — sentence contains 'street',
+    #     'spring', 'three', 'shrimp'. Learner likely vowel-inserted or
+    #     simplified the cluster.
+    cl_idx = _find_word_matching(
+        tokens, lambda t: _cluster_hint_for(t) is not None,
+    )
+    if cl_idx is not None:
+        results.append(
+            AsrResult(
+                recognized_text=target,
+                scores=_scores(72, 78, 100),
+                words=_words(
+                    tokens, accuracy=88,
+                    mispron_index=cl_idx, weak_phonemes=["g"],
+                ),
+            )
+        )
+
+    # 20. Vowel-only mispronunciation — a curated vowel-anchored word gets
+    #     its vowel phoneme flagged (weak_sounds = ["iy"] / ["ae"] / etc.).
+    #     Fills the biggest gap in the previous training set, which never
+    #     coached any vowel. Uses word_hints.WORD_VOWEL_ANCHORS to pick the
+    #     right phoneme code so contrast_hint_for produces a proper anchor
+    #     ("the 'ee' sound like in 'tree'").
+    vw_idx = _find_word_matching(
+        tokens, lambda t: _word_vowel_for(t) is not None,
+    )
+    if vw_idx is not None:
+        vw_phoneme = _word_vowel_for(tokens[vw_idx])
+        # Use a lower phoneme score so contrast_hint_for treats this as a
+        # real weak sound and produces the anchor hint.
+        vw_words = _words(tokens, accuracy=92)
+        vw_words[vw_idx] = WordResult(
+            word=tokens[vw_idx], accuracy_score=68,
+            error_type="Mispronunciation",
+            phonemes=[PhonemeScore(phoneme=vw_phoneme, accuracy_score=42)],
+        )
+        results.append(
+            AsrResult(
+                recognized_text=target,
+                scores=_scores(72, 88, 100),
+                words=vw_words,
+            )
+        )
+
     return results
 
 
 def bootstrap_feedback(messages: list[dict], client) -> str:
-    """Ask GPT-4 for the ideal assistant reply given the system+user messages."""
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        messages=messages,
-        temperature=0.4,
-        max_tokens=160,
-    )
-    return (response.choices[0].message.content or "").strip()
+    """Ask the teacher model for the ideal assistant reply given the
+    system+user messages.
+
+    Uses gpt-4o-mini: this task is rule-following (convert a structured JSON
+    verdict into a spoken sentence per SYSTEM_PROMPT rules with slot fills),
+    not creative — mini's rule adherence is more than sufficient, and its
+    10x higher rate limits + 30x lower cost make the full 5k-row run
+    feasible on tier 1.
+
+    Wraps the SDK's built-in max_retries=6 with one more layer of catch-and-
+    sleep for RateLimitError: on tier 1 a bursty batch can drain the TPM
+    window before the SDK's exponential backoff catches up, and losing a
+    whole in-flight batch to a stray 429 was the failure mode that stopped
+    the last two runs. Two extra manual retries with a 20s sleep gives the
+    window time to reset."""
+    import openai as _openai  # local import so the module stays importable
+    for attempt in range(3):
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=messages,
+                temperature=0.4,
+                max_tokens=160,
+            )
+            return (response.choices[0].message.content or "").strip()
+        except _openai.RateLimitError:
+            if attempt == 2:
+                raise
+            time.sleep(_RATE_LIMIT_SLEEP)
+    return ""
 
 
 def main() -> None:
@@ -488,18 +677,28 @@ def main() -> None:
             print(f"resuming: {done}/{len(work)} samples already generated",
                   flush=True)
 
+    # Parallelize GPT-4o calls in batches to hit ~5x throughput vs the old
+    # sequential+throttle loop. Results within a batch are written in order,
+    # so the resume journal (_progress.jsonl line count) still maps cleanly
+    # to the deterministic `work` list on restart.
+    def _one(messages: list[dict]) -> str:
+        return "" if args.no_bootstrap else bootstrap_feedback(messages, client)
+
     with progress_path.open("a", encoding="utf-8") as out:
-        for idx in range(done, len(work)):
-            messages = work[idx]
-            feedback = "" if args.no_bootstrap else bootstrap_feedback(messages, client)
-            sample = {"messages": messages + [
-                {"role": "assistant", "content": feedback}
-            ]}
-            out.write(json.dumps(sample, ensure_ascii=False) + "\n")
-            out.flush()
-            print(f"[{idx + 1}/{len(work)}]", flush=True)
-            if not args.no_bootstrap:
-                time.sleep(_THROTTLE_SEC)
+        with ThreadPoolExecutor(max_workers=_CONCURRENCY) as executor:
+            for batch_start in range(done, len(work), _CONCURRENCY):
+                batch_end = min(batch_start + _CONCURRENCY, len(work))
+                batch = [work[i] for i in range(batch_start, batch_end)]
+                # executor.map preserves input order, so we can write results
+                # sequentially without any locking.
+                feedbacks = list(executor.map(_one, batch))
+                for messages, feedback in zip(batch, feedbacks):
+                    sample = {"messages": messages + [
+                        {"role": "assistant", "content": feedback}
+                    ]}
+                    out.write(json.dumps(sample, ensure_ascii=False) + "\n")
+                out.flush()
+                print(f"[{batch_end}/{len(work)}]", flush=True)
 
     # Every item generated — load the full journal back, shuffle, split, write.
     samples = [
