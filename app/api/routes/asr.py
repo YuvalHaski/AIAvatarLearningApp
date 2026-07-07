@@ -115,6 +115,9 @@ async def asr(
         extra_words=report.extra_words,
         substitutions=report.substitutions,
         mispronounced_words=report.mispronounced_words,
+        silent_letter_errors=report.silent_letter_errors,
+        hard_soft_c_errors=report.hard_soft_c_errors,
+        cluster_errors=report.cluster_errors,
         feedback_points=report.feedback_points,
         feedback_text=feedback_text,
     )
