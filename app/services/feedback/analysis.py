@@ -23,28 +23,27 @@ from app.services.feedback.alignment import align, tokenize
 from app.services.feedback.phoneme_hints import (
     canonical_phoneme,
     contrast_hint_for,
-    correct_hint_for,
     has_anchor,
     is_vowel,
-    plausible_weak_phonemes,
 )
 from app.services.feedback.word_hints import (
-    cluster_hint_for,
-    hard_soft_c_for,
-    silent_letter_for,
     sound_hint_for_substitution,
 )
 
-# A word counts as mispronounced below this accuracy score (0-100). Azure's
-# scripted assessment is very lenient — audibly accented words routinely score
-# in the high 70s / low 80s with ErrorType "None" — so this is set high (85) to
-# surface them. The trade-off is more false positives on accented-but-acceptable
-# speech; this is a deliberate sensitivity choice, not a neutral default.
-WORD_MISPRONOUNCED_THRESHOLD = 85
-# A phoneme inside a word counts as "weak" below this accuracy score. Kept in
-# step with the lenient word cutoff above so a flagged word actually has weak
-# phonemes to point at (e.g. a barely-rolled "r" that Azure scores ~78).
+# A word with Azure ErrorType "None" only gets considered below this conservative
+# accuracy score. Even then, it is surfaced only when a strongly weak phoneme
+# gives us something evidence-based to coach.
+WORD_MISPRONOUNCED_THRESHOLD = 75
+# A phoneme inside an Azure-confirmed mispronounced word counts as "weak" below
+# this accuracy score.
 PHONEME_WEAK_THRESHOLD = 80
+# For words Azure did not mark as mispronunciations, require much stronger
+# phoneme evidence before surfacing feedback.
+PHONEME_STRONG_WEAK_THRESHOLD = 65
+# Only name the produced sound in a contrast hint when Azure's top
+# NBestPhonemes candidate is confident and clearly ahead of the expected sound.
+PRODUCED_PHONEME_MIN_SCORE = 70
+PRODUCED_PHONEME_MIN_MARGIN = 20
 # Azure fluency score below this is worth mentioning.
 FLUENCY_LOW_THRESHOLD = 60
 # A weak phoneme seen in this many words becomes a "pattern".
@@ -73,26 +72,67 @@ SUBSCORE_POLISH_THRESHOLD = 95
 # `polish_tip` field sent to the Stage 2 model.
 _POLISH_TIPS: dict[str, str] = {
     "fluency": "speak with a smoother flow, with fewer pauses",
-    "prosody": "vary your tone a little more naturally",
     "accuracy": "enunciate each sound a bit more sharply",
     "completeness": "say every word fully",
 }
 
 
-def _weak_sound_pairs(word: WordResult) -> list[tuple[str, str | None]]:
+def _expected_candidate_score(phoneme, expected: str) -> float:
+    """Best NBest score for the expected phoneme, or Azure's expected score."""
+    scores = [
+        candidate.score
+        for candidate in phoneme.candidates
+        if canonical_phoneme(candidate.phoneme) == expected
+    ]
+    return max(scores) if scores else phoneme.accuracy_score
+
+
+def _confident_produced_phoneme(phoneme, expected: str) -> str | None:
+    """Return the produced phoneme only with strong contrast evidence."""
+    if not phoneme.candidates:
+        return None
+
+    top = phoneme.candidates[0]
+    produced = canonical_phoneme(top.phoneme)
+    if not produced:
+        return None
+    if produced == expected:
+        return expected
+    if is_vowel(expected) != is_vowel(produced):
+        return None
+
+    expected_score = _expected_candidate_score(phoneme, expected)
+    if (
+        top.score >= PRODUCED_PHONEME_MIN_SCORE
+        and top.score - expected_score >= PRODUCED_PHONEME_MIN_MARGIN
+    ):
+        return produced
+    return None
+
+
+def _weak_sound_pairs(
+    word: WordResult,
+    *,
+    threshold: float = PHONEME_WEAK_THRESHOLD,
+    include_threshold: bool = False,
+) -> list[tuple[str, str | None]]:
     """(expected, produced|None) for the phonemes worth coaching, worst
     (lowest accuracy) first so the hint leads with the biggest problem sound.
 
-    A phoneme is coachable when Azure scored it below the weak threshold AND its
-    top NBestPhonemes candidate isn't already the expected sound. Using NBest
-    this way (a) filters positions the learner actually hit — the low-score
-    noise that used to make hints lead with a sound the learner said correctly —
-    and (b) records what they produced instead, for a "you said X not Y"
-    contrast. `produced` is None when NBest is unavailable (older data /
-    unsupported locale), so the hint degrades to a plain anchor."""
+    A phoneme is coachable when Azure scored it below the weak threshold and we
+    have an anchor for the expected sound. NBestPhonemes is used conservatively:
+    if the top candidate is the expected sound, the low score is treated as
+    noise; if a different top candidate is confident enough, we include it for a
+    contrast hint; otherwise `produced` is None and the hint stays focused on
+    the correct sound only."""
     scored: list[tuple[str, str | None, float]] = []
     for ph in word.phonemes:
-        if not ph.phoneme or ph.accuracy_score >= PHONEME_WEAK_THRESHOLD:
+        is_weak = (
+            ph.accuracy_score <= threshold
+            if include_threshold
+            else ph.accuracy_score < threshold
+        )
+        if not ph.phoneme or not is_weak:
             continue
         expected = canonical_phoneme(ph.phoneme)
         # Only coach sounds we can name. Drops schwa ('ax'), glides ('y'), and
@@ -100,19 +140,12 @@ def _weak_sound_pairs(word: WordResult) -> list[tuple[str, str | None]]:
         # or fabricate a "recurring 'ax' difficulty" pattern.
         if not expected or not has_anchor(expected):
             continue
-        produced = canonical_phoneme(ph.candidates[0]) if ph.candidates else ""
-        if produced:
-            # Azure's best guess of what was produced IS the expected sound: the
-            # learner hit the target, the low score is noise — don't coach it.
-            if produced == expected:
-                continue
-            # A vowel slot reported as a consonant (or vice versa) is Azure's
-            # segmentation collapsing on a badly-said word, not a real swap
-            # (e.g. menu's 'uw' came back as 'n'). Drop it so the hint leads
-            # with the genuine sound error instead of this noise.
-            if is_vowel(expected) != is_vowel(produced):
-                continue
-        scored.append((expected, produced or None, ph.accuracy_score))
+        produced = _confident_produced_phoneme(ph, expected)
+        # Azure's best guess of what was produced IS the expected sound: the
+        # learner hit the target, so the low score is probably noise.
+        if produced == expected:
+            continue
+        scored.append((expected, produced, ph.accuracy_score))
     scored.sort(key=lambda eps: eps[2])
     seen: set[str] = set()
     pairs: list[tuple[str, str | None]] = []
@@ -128,41 +161,41 @@ def _find_mispronounced(words: list[WordResult]) -> list[MispronouncedWord]:
     """Words Azure flagged as mispronounced (or that scored low overall)."""
     result: list[MispronouncedWord] = []
     for word in words:
-        is_mispronounced = (
-            word.error_type == "Mispronunciation"
-            or word.accuracy_score < WORD_MISPRONOUNCED_THRESHOLD
-        )
         # Omission / Insertion are handled by text alignment, not here.
-        if is_mispronounced and word.error_type not in ("Omission", "Insertion"):
-            pairs = _weak_sound_pairs(word)
+        if word.error_type in ("Omission", "Insertion"):
+            continue
+
+        if word.error_type == "Mispronunciation":
+            pairs = _weak_sound_pairs(word, threshold=PHONEME_WEAK_THRESHOLD)
             weak = [expected for expected, _ in pairs]
-            if pairs:
-                # Coach the actually-wrong sounds, naming what was said instead
-                # ("the 'e' sound like in 'bed', not the 'a' sound").
-                hint = contrast_hint_for(pairs)
-            else:
-                # Azure flagged the word but no single phoneme is weak-and-wrong
-                # (typical for "th", or when every weak phoneme was actually hit).
-                # Derive the hint from the difficult sounds the spelling contains
-                # so the learner still gets a concrete target. `weak_phonemes`
-                # stays Azure-only so pattern detection isn't polluted by these
-                # orthographic guesses.
-                hint = correct_hint_for(plausible_weak_phonemes(word.word))
-            # Suppress words flagged ONLY by the lenient acc<85 threshold that
-            # have no coachable sound to point at. Azure scores unstressed
-            # function words like "the" in the low 80s on a schwa we can't
-            # anchor, which otherwise becomes generic "work on this word"
-            # noise. Words Azure itself marks "Mispronunciation" are always
-            # kept (it's confident they're wrong) even without a hint.
-            soft_only = word.error_type != "Mispronunciation"
-            if soft_only and hint is None:
-                continue
             result.append(
                 MispronouncedWord(
                     word=word.word,
                     accuracy_score=word.accuracy_score,
                     weak_phonemes=weak,
-                    correct_hint=hint,
+                    correct_hint=contrast_hint_for(pairs) if pairs else None,
+                )
+            )
+            continue
+
+        if (
+            word.error_type == "None"
+            and word.accuracy_score < WORD_MISPRONOUNCED_THRESHOLD
+        ):
+            pairs = _weak_sound_pairs(
+                word,
+                threshold=PHONEME_STRONG_WEAK_THRESHOLD,
+                include_threshold=True,
+            )
+            if not pairs:
+                continue
+            weak = [expected for expected, _ in pairs]
+            result.append(
+                MispronouncedWord(
+                    word=word.word,
+                    accuracy_score=word.accuracy_score,
+                    weak_phonemes=weak,
+                    correct_hint=contrast_hint_for(pairs),
                 )
             )
     return result
@@ -176,43 +209,15 @@ def _split_spelling_errors(
     list[HardSoftCError],
     list[ClusterError],
 ]:
-    """Route each flagged word into its most specific coaching category.
+    """Keep spelling-rule buckets empty unless explicit evidence is available.
 
-    Preference order: silent letter → hard/soft-c → consonant cluster →
-    phoneme mispronunciation. Each word is coached in EXACTLY ONE category
-    so the avatar doesn't say two things about the same word. Detection
-    only fires when Azure already flagged the word — the curated tables
-    don't invent errors, they just re-label ones Azure already saw.
+    The current ASR result tells us that a word was mispronounced, but not that a
+    silent letter was pronounced, a hard/soft-c rule was confused, or a cluster
+    was simplified. Curated spelling tables are useful hints for future explicit
+    detectors, but table membership alone is not evidence. Until the analyzer
+    receives that evidence, keep these as generic mispronunciations.
     """
-    remaining: list[MispronouncedWord] = []
-    silent: list[SilentLetterError] = []
-    hard_soft: list[HardSoftCError] = []
-    clusters: list[ClusterError] = []
-
-    for word in mispronounced:
-        sl = silent_letter_for(word.word)
-        if sl is not None:
-            letter, hint = sl
-            silent.append(SilentLetterError(
-                word=word.word, silent_letter=letter, hint=hint,
-            ))
-            continue
-        hsc = hard_soft_c_for(word.word)
-        if hsc is not None:
-            rule, hint = hsc
-            hard_soft.append(HardSoftCError(
-                word=word.word, rule=rule, hint=hint,
-            ))
-            continue
-        cl = cluster_hint_for(word.word)
-        if cl is not None:
-            cluster, hint = cl
-            clusters.append(ClusterError(
-                word=word.word, cluster=cluster, hint=hint,
-            ))
-            continue
-        remaining.append(word)
-    return remaining, silent, hard_soft, clusters
+    return mispronounced, [], [], []
 
 
 def _detect_patterns(mispronounced: list[MispronouncedWord]) -> list[str]:
@@ -362,8 +367,8 @@ def analyze(target_sentence: str, asr: AsrResult) -> ErrorReport:
     ]
 
     all_mispronounced = _find_mispronounced(asr.words)
-    # Route flagged words into their most specific category; each word is
-    # coached exactly once, in the most specific bucket that matches.
+    # Keep spelling-rule buckets empty until Stage 1 has explicit evidence for
+    # them; table membership alone is not enough to relabel a mispronunciation.
     mispronounced, silent_letters, hard_soft_c, clusters = _split_spelling_errors(
         all_mispronounced,
     )

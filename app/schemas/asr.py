@@ -3,12 +3,20 @@
 These models are used both internally (between asr_service -> Stage 1 -> Stage 2)
 and at the API boundary, so everything here is JSON-serializable.
 """
-from pydantic import BaseModel, Field
+from typing import Any
+
+from pydantic import BaseModel, Field, field_validator
 
 
 # ==========================================================================
 # ASR layer  -  produced by asr_service from Azure's response
 # ==========================================================================
+
+class PhonemeCandidate(BaseModel):
+    """One Azure NBestPhonemes candidate and its confidence score."""
+    phoneme: str
+    score: float
+
 
 class PhonemeScore(BaseModel):
     """A single (expected) phoneme and how accurately it was pronounced (0-100)."""
@@ -17,10 +25,25 @@ class PhonemeScore(BaseModel):
     # Azure NBestPhonemes: the phonemes Azure thinks the learner ACTUALLY
     # produced at this position, highest-confidence first. Empty when NBest is
     # off or the locale doesn't support it. When the top entry differs from
-    # `phoneme`, the learner substituted a sound (the basis for "you said X
-    # instead of Y"); when it equals `phoneme`, they hit the target sound and
-    # the low score is noise we can filter out.
-    candidates: list[str] = Field(default_factory=list)
+    # `phoneme`, the learner may have substituted a sound. The candidate score
+    # lets Stage 1 require strong evidence before saying "not the X sound".
+    # String candidates are still accepted for older tests and synthetic data.
+    candidates: list[PhonemeCandidate] = Field(default_factory=list)
+
+    @field_validator("candidates", mode="before")
+    @classmethod
+    def _coerce_candidates(cls, value: Any) -> Any:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            return value
+        converted: list[Any] = []
+        for candidate in value:
+            if isinstance(candidate, str):
+                converted.append({"phoneme": candidate, "score": 100.0})
+            else:
+                converted.append(candidate)
+        return converted
 
 
 class WordResult(BaseModel):
@@ -76,9 +99,10 @@ class MispronouncedWord(BaseModel):
 class SilentLetterError(BaseModel):
     """A word whose silent letter was likely pronounced.
 
-    Emitted when Azure flagged the word AND the word appears in the curated
-    SILENT_LETTER_WORDS table. `hint` is the verbatim rule the model must
-    speak, e.g. "the 'k' in 'knife' is silent — say it like 'nife'".
+    Emitted only when Stage 1 has explicit evidence for the spelling-rule
+    mistake. Table membership alone is not enough. `hint` is the verbatim rule
+    the model must speak, e.g. "the 'k' in 'knife' is silent — say it like
+    'nife'".
     """
     word: str
     silent_letter: str
@@ -88,6 +112,7 @@ class SilentLetterError(BaseModel):
 class HardSoftCError(BaseModel):
     """A word likely pronounced with the wrong C rule.
 
+    Emitted only when Stage 1 has explicit evidence for the rule mistake.
     `rule` is one of: soft | hard | cc-ks | cc-k. `hint` is the verbatim
     coaching line, e.g. "in 'city' the 'c' sounds like 's' — say it like
     'sity'".
@@ -99,7 +124,8 @@ class HardSoftCError(BaseModel):
 
 class ClusterError(BaseModel):
     """A word whose consonant cluster (str, spr, thr, ...) was likely
-    vowel-inserted or simplified. `cluster` is the raw trigraph; `hint` is
+    vowel-inserted or simplified. Emitted only when Stage 1 has explicit
+    evidence for that cluster error. `cluster` is the raw trigraph; `hint` is
     the coaching line, e.g. "the 'str' cluster — blend it smoothly like in
     'street'"."""
     word: str
