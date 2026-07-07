@@ -5,9 +5,21 @@ generator (`training/generate_dataset.py`). Keeping both sides on the same
 table means the model is trained on the exact same hint strings it will be
 asked to read aloud in production.
 
+Two hint styles per phoneme:
+  * ANCHOR — "the 'th' sound like in 'thin'" (used for phoneme *contrast*
+    hints, and as one option for plain correct hints).
+  * ARTICULATION — "tip of your tongue lightly between your teeth — let
+    air flow" (used only for plain correct hints, chosen at random so the
+    avatar doesn't sound formulaic).
+
+`correct_hint_for` picks between anchor and articulation randomly per
+call; `contrast_hint_for` always uses anchor because the ", not the 'x'
+sound" tail only reads coherently on anchor-style phrases.
+
 The phoneme codes here are the SAPI-style labels Azure's scripted
 Pronunciation Assessment returns (e.g. "th", "sh", "r"), not IPA.
 """
+import random
 import re
 
 # IPA symbols (and a few variants) mapped back to the SAPI-style codes this
@@ -119,6 +131,124 @@ _PHONEME_DISPLAY: dict[str, str] = {
     "er": "er",
 }
 
+# Articulation-style coaching lines: mouth shape, tongue placement, breath.
+# These are what a real pronunciation coach (ELSA / speech therapist / Rachel's
+# English) says out loud. Every anchored phoneme should have at least one
+# articulation option so `varied_correct_phrase` can rotate through variety.
+#
+# Kept spoken-friendly and short — each line reads naturally inside the same
+# "For '<word>', practice <line>." frame as the anchor hint.
+_PHONEME_ARTICULATIONS: dict[str, list[str]] = {
+    # Consonants
+    "th": [
+        "tipping your tongue lightly between your teeth — just let air flow",
+        "peeking your tongue out just past your top teeth for a soft hiss",
+    ],
+    "dh": [
+        "putting your tongue between your teeth and voicing it — a soft buzz",
+        "the same 'th' shape, but this time add your voice",
+    ],
+    "sh": [
+        "rounding your lips and pushing air through — like hushing someone",
+        "a long, quiet 'sh' — no voice, just air",
+    ],
+    "ch": [
+        "starting with a quick 't' and releasing into 'sh' — sharp and short",
+        "a burst of air off the roof of your mouth — 't' then 'sh'",
+    ],
+    "ng": [
+        "letting the back of your tongue touch the roof — hum through your nose",
+        "keeping your mouth open and humming with your tongue at the back",
+    ],
+    "r": [
+        "curling your tongue up and back — but don't let it touch the roof",
+        "pulling your tongue back like a soft growl, lips slightly rounded",
+    ],
+    "l": [
+        "touching the tip of your tongue to the ridge behind your top teeth",
+        "letting the air flow around the sides of your tongue",
+    ],
+    "v": [
+        "your top teeth touching your bottom lip, then buzzing — like a bee",
+        "biting your bottom lip lightly and adding voice",
+    ],
+    "w": [
+        "rounding your lips into a small circle — like starting to whistle",
+        "pushing your lips forward, then releasing into the next sound",
+    ],
+    "z": [
+        "humming a long 's' — same shape, but voice it like a bee",
+        "keeping your teeth close and buzzing the air through them",
+    ],
+    "s": [
+        "resting the tip of your tongue near your top teeth and hissing softly",
+        "a quiet, steady hiss — no voice, just air",
+    ],
+
+    # Vowels — timing, mouth shape, tension
+    "iy": [   # long ee
+        "smiling wide and stretching the sound — hold it long",
+        "keeping your tongue high and lips spread, like saying 'cheese'",
+    ],
+    "ih": [   # short i
+        "relaxing your mouth completely — short and quick, don't stretch it",
+        "a lazy, brief 'i' — half the length of the long 'ee'",
+    ],
+    "ae": [   # cat
+        "opening your mouth wide and dropping your jaw",
+        "a bright, open 'a' — mouth wide, tongue forward",
+    ],
+    "eh": [   # bed
+        "opening your mouth halfway — tongue in the middle, jaw relaxed",
+        "a short, clean 'e' — not as wide as 'a', not as narrow as 'ee'",
+    ],
+    "ah": [   # cup
+        "relaxing completely — like the 'uh' when you're thinking",
+        "an open, neutral sound — jaw dropped, tongue at rest",
+    ],
+    "aa": [   # hot
+        "opening your mouth wide, like the dentist chair",
+        "a deep, open 'o' — jaw dropped, back of tongue low",
+    ],
+    "ao": [   # saw
+        "rounding your lips a little and dropping your jaw",
+        "a long, open 'aw' — lips slightly rounded, mouth wide",
+    ],
+    "aw": [   # now
+        "starting with 'ah' and rounding your lips as you finish",
+        "gliding from open 'a' into a rounded 'oo'",
+    ],
+    "ay": [   # eye / mild
+        "starting with 'ah' and sliding up to 'ee' — one smooth motion",
+        "an open jaw that closes into a smile as you finish",
+    ],
+    "ey": [   # day
+        "starting with 'eh' and gliding up to 'ee'",
+        "a short 'e' that stretches into 'ee' at the end",
+    ],
+    "ow": [   # boat
+        "starting with 'oh' and rounding your lips tighter as you finish",
+        "gliding from open 'o' into a small round 'oo'",
+    ],
+    "oy": [   # boy
+        "starting with 'aw' and sliding up into 'ee'",
+        "a rounded 'o' that opens up into a smile",
+    ],
+    "uh": [   # book
+        "lightly rounding your lips — quick and relaxed",
+        "a short, soft 'oo' — half the length of the long 'oo' in 'food'",
+    ],
+    "uw": [   # food
+        "pushing your lips forward and rounding them tight — long and pushed",
+        "a long, tight 'oo' — like blowing out a candle very slowly",
+    ],
+    "er": [   # her
+        "curling your tongue up and holding the 'r' throughout",
+        "a long, colored vowel — like the 'r' in 'red' but longer",
+    ],
+}
+
+
 # How many anchors to chain in a single hint before it stops sounding natural.
 # Phonemes arrive worst-first, so this keeps the most-mispronounced sounds.
 _MAX_ANCHORS_PER_HINT = 3
@@ -174,12 +304,32 @@ def _display_grapheme(key: str) -> str | None:
 
 def _anchor_phrase(key: str) -> str | None:
     """ "the '<grapheme>' sound like in '<anchor>'" for one SAPI code, or None
-    when the code has no anchor word."""
+    when the code has no anchor word. Deterministic — used by
+    `contrast_hint_for` where the ", not the 'x' sound" tail depends on the
+    anchor shape."""
     anchor_word = _PHONEME_ANCHOR_WORDS.get(key)
     if anchor_word is None:
         return None
     grapheme = _PHONEME_DISPLAY.get(key, key)
     return f"the '{grapheme}' sound like in '{anchor_word}'"
+
+
+def _varied_correct_phrase(key: str) -> str | None:
+    """Randomly return anchor OR one articulation line for `key`.
+
+    Used only by `correct_hint_for` so the avatar rotates between the
+    "sound like in X" anchor and articulation-style coaching (mouth shape,
+    tongue placement). Callers of `contrast_hint_for` still get the anchor
+    unchanged, since the contrast tail only reads on anchor phrases.
+
+    Returns None when the code has no anchor at all (schwa, unanchored
+    consonants) — matches `_anchor_phrase`'s contract so caller logic
+    doesn't have to branch."""
+    anchor = _anchor_phrase(key)
+    if anchor is None:
+        return None
+    options: list[str] = [anchor, *_PHONEME_ARTICULATIONS.get(key, [])]
+    return random.choice(options)
 
 
 def correct_hint_for(weak_phonemes: list[str]) -> str | None:
@@ -203,7 +353,7 @@ def correct_hint_for(weak_phonemes: list[str]) -> str | None:
         if not key or key in seen:
             continue
         seen.add(key)
-        phrase = _anchor_phrase(key)
+        phrase = _varied_correct_phrase(key)
         if phrase is None:
             continue
         anchors.append(phrase)
