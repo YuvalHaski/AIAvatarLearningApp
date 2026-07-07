@@ -23,7 +23,17 @@ def render_point(point: FeedbackPoint) -> str | None:
         return f"Try not to add the word '{point.word}'."
     if point.kind == "substitution":
         heard = point.detail or "a different word"
-        return f"You {heard} instead of '{point.word}'."
+        # Minimal pair: we can't know the learner's intent from audio alone,
+        # so phrase it as an acoustic observation ("sounded more like") and
+        # attach the sound_hint teaching the ONE sound that distinguishes
+        # the pair. General subs (no sound_hint) stay as "you said X instead
+        # of Y" — those are real word-level swaps where naming it is enough.
+        if point.sound_hint:
+            return (
+                f"Your '{point.word}' sounded more like '{heard}'. "
+                f"Practice {point.sound_hint}."
+            )
+        return f"You said '{heard}' instead of '{point.word}'."
     if point.kind == "mispronunciation":
         # `detail` is the spoken-friendly anchor hint (correct_hint). Mirror the
         # model's frame so the fallback reads the same: "For 'thought', practice
@@ -32,6 +42,15 @@ def render_point(point: FeedbackPoint) -> str | None:
         if point.detail:
             return f"For '{point.word}', practice {point.detail}."
         return f"Work on the way you say '{point.word}'."
+    if point.kind in ("silent_letter", "hard_soft_c"):
+        # `detail` is a full rule clause, e.g. "the 'k' in 'knife' is silent —
+        # say it like 'nife'". Frame with "Remember," so it reads naturally.
+        return f"Remember, {point.detail}." if point.detail else None
+    if point.kind == "cluster":
+        # Same frame as mispronunciation — cluster hints ARE anchor phrases.
+        if point.detail:
+            return f"For '{point.word}', practice {point.detail}."
+        return None
     if point.kind == "pattern":
         return f"I noticed {point.detail}."
     if point.kind == "fluency":
