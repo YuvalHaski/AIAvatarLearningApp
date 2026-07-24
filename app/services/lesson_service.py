@@ -1,9 +1,13 @@
+import logging
 import uuid
 
 from typing import Optional, Dict, Any, List
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import func
 from app.models.domain import Lesson, Sentence, UserLessonProgress, SentenceAttemptHistory, ProgressStatusEnum
+from app.services.badge_service import evaluate_and_award_badges
+
+logger = logging.getLogger(__name__)
 
 
 # ==========================================
@@ -152,11 +156,36 @@ def complete_lesson(db: Session, lesson_id: str, user_id: str, run_id: str) -> D
     # 5. Commit all entity modifications atomically within a single database transaction
     db.commit()
 
+    # 6. Evaluate the badge catalog now that the completion is durable. Badge-awarding is
+    # best-effort: a bug here must never turn an already-successful lesson completion into a
+    # failed request for the user.
+    new_badges = []
+    try:
+        new_badges = evaluate_and_award_badges(
+            db, user_id, context={"completed_lesson_score": final_score}
+        )
+    except Exception:
+        logger.exception(
+            "Badge evaluation failed for user_id=%s lesson_id=%s; lesson completion unaffected.",
+            user_id, lesson_id,
+        )
+
     return {
         "lesson_id": lesson_id,
         "status": progress.status,
         "average_score": final_score,
-        "feedback_text": feedback
+        "feedback_text": feedback,
+        # Every badge here was just awarded, so is_achieved is always True - unlike
+        # progress_service.get_all_badges_status, this isn't a per-badge computed status.
+        "new_badges": [
+            {
+                "id": badge.id,
+                "title": badge.title,
+                "description": badge.description,
+                "is_achieved": True,
+            }
+            for badge in new_badges
+        ]
     }
 
 

@@ -12,7 +12,6 @@ class RecentBadge(BaseModel):
     """
     id: str
     title: str
-    icon: str | None = None
     earned_date: str  # Pre-formatted string or ISO-8601
 
     model_config = ConfigDict(from_attributes=True)

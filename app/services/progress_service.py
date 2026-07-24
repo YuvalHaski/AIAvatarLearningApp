@@ -127,7 +127,6 @@ def get_overview_data(db: Session, user_id: str) -> Dict[str, Any]:
         recent_achievements.append({
             "id": badge.id,
             "title": badge.title,
-            "icon": badge.icon,
             "earned_date": achieved_at.isoformat() if achieved_at else ""
         })
 
@@ -220,8 +219,48 @@ def get_all_badges_status(db: Session, user_id: str) -> List[Dict[str, Any]]:
             "id": badge.id,
             "title": badge.title,
             "description": badge.description,
-            "icon": badge.icon,
             "is_achieved": badge.id in earned_badge_ids  # True if user has it, False otherwise
         })
 
     return badges_response
+
+
+def get_unseen_badges(db: Session, user_id: str) -> List[Dict[str, Any]]:
+    """
+    Returns badges the user has earned but hasn't yet been shown a celebration for.
+    Fallback path for the client to reliably surface "badge earned" UI even if it missed the
+    inline `new_badges` field on a /lessons/{id}/complete response (e.g. dropped connection).
+    """
+    rows = (
+        db.query(Badge, UserBadge.achieved_at)
+        .join(UserBadge, Badge.id == UserBadge.badge_id)
+        .filter(UserBadge.user_id == user_id, UserBadge.is_seen.is_(False))
+        .order_by(UserBadge.achieved_at.asc())
+        .all()
+    )
+
+    return [
+        {
+            "id": badge.id,
+            "title": badge.title,
+            "description": badge.description,
+            "achieved_at": achieved_at.isoformat() if achieved_at else ""
+        }
+        for badge, achieved_at in rows
+    ]
+
+
+def mark_badges_seen(db: Session, user_id: str, badge_ids: List[str]) -> None:
+    """
+    Acknowledges that the client has shown the celebration for the given badges, so they no
+    longer appear in get_unseen_badges. Silently ignores badge_ids the user hasn't earned.
+    """
+    if not badge_ids:
+        return
+
+    db.query(UserBadge).filter(
+        UserBadge.user_id == user_id,
+        UserBadge.badge_id.in_(badge_ids)
+    ).update({UserBadge.is_seen: True}, synchronize_session=False)
+
+    db.commit()
