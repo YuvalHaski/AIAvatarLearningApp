@@ -12,7 +12,13 @@ import wave
 import azure.cognitiveservices.speech as speechsdk
 
 from app.core.config import settings
-from app.schemas.asr import AsrResult, PhonemeScore, PronunciationScores, WordResult
+from app.schemas.asr import (
+    AsrResult,
+    PhonemeCandidate,
+    PhonemeScore,
+    PronunciationScores,
+    WordResult,
+)
 
 
 class AsrError(Exception):
@@ -29,7 +35,7 @@ def _read_pcm(wav_bytes: bytes) -> tuple[bytes, int, int, int]:
     return pcm, channels, sample_width, frame_rate
 
 
-def _nbest_candidates(raw_phoneme: dict) -> list[str]:
+def _nbest_candidates(raw_phoneme: dict) -> list[PhonemeCandidate]:
     """Azure NBestPhonemes for one position: the phonemes Azure thinks were
     actually produced, ordered most-likely first.
 
@@ -45,7 +51,10 @@ def _nbest_candidates(raw_phoneme: dict) -> list[str]:
         if c.get("Phoneme") and c.get("Score") is not None
     ]
     scored.sort(key=lambda ps: ps[1], reverse=True)
-    return [phoneme for phoneme, _ in scored]
+    return [
+        PhonemeCandidate(phoneme=phoneme, score=score)
+        for phoneme, score in scored
+    ]
 
 
 def _parse_words(json_result: str) -> list[WordResult]:
