@@ -78,3 +78,50 @@ def test_verifier_leaves_complete_feedback_untouched(monkeypatch):
     report = analyze("three", make_asr_result("three", accuracy=40, words=words))
     text = generator.generate_feedback(report)
     assert text == reply  # nothing appended when coverage is already complete
+
+
+def test_model_reply_missing_exact_mispronunciation_hint_uses_template(monkeypatch):
+    _stub_model_reply(
+        monkeypatch,
+        "Great job! For the word 'developer', focus on the initial d and final er.",
+    )
+    words = [
+        WordResult(
+            word="developer",
+            accuracy_score=48,
+            error_type="Mispronunciation",
+            phonemes=[PhonemeScore(phoneme="r", accuracy_score=28)],
+        )
+    ]
+    report = analyze(
+        "developer",
+        make_asr_result("developer", accuracy=48, words=words),
+    )
+    text = generator.generate_feedback(report).lower()
+    assert "initial d" not in text
+    assert "final er" not in text
+    assert "developer" in text
+    assert "the 'r' sound like in 'red'" in text
+
+
+def test_model_reply_with_not_the_sound_contrast_uses_template(monkeypatch):
+    _stub_model_reply(
+        monkeypatch,
+        "Nice try! For 'three', practice the 'th' sound like in 'thin', not the 'p' sound.",
+    )
+    words = [
+        WordResult(
+            word="three",
+            accuracy_score=82,
+            error_type="None",
+            phonemes=[PhonemeScore(phoneme="th", accuracy_score=52)],
+        )
+    ]
+    report = analyze(
+        "three",
+        make_asr_result("three", accuracy=72, words=words),
+    )
+    text = generator.generate_feedback(report).lower()
+    assert "three" in text
+    assert "the 'th' sound like in 'thin'" in text
+    assert "not the" not in text

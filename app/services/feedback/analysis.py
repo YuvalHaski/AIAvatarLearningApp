@@ -44,6 +44,20 @@ PHONEME_STRONG_WEAK_THRESHOLD = 65
 # NBestPhonemes candidate is confident and clearly ahead of the expected sound.
 PRODUCED_PHONEME_MIN_SCORE = 70
 PRODUCED_PHONEME_MIN_MARGIN = 20
+# Product priority: coach these high-value sounds whenever Azure gives direct
+# phoneme evidence, even if the whole word score stayed relatively high.
+PRIORITY_FEEDBACK_PHONEMES = frozenset({"th", "dh", "r"})
+# Priority sounds get a slightly more sensitive detector because they are the
+# product focus right now. This uses direct Azure phoneme/NBest evidence only;
+# it still does not guess from spelling.
+PRIORITY_PHONEME_WEAK_THRESHOLD = 85
+PRIORITY_PRODUCED_PHONEME_MIN_SCORE = 70
+PRIORITY_PRODUCED_PHONEME_MIN_MARGIN = 10
+PRIORITY_CONTRAST_PHONEMES: dict[str, frozenset[str]] = {
+    "th": frozenset({"f", "s", "t"}),
+    "dh": frozenset({"d", "z", "v"}),
+    "r": frozenset({"l", "w"}),
+}
 # Azure fluency score below this is worth mentioning.
 FLUENCY_LOW_THRESHOLD = 60
 # A weak phoneme seen in this many words becomes a "pattern".
@@ -110,6 +124,38 @@ def _confident_produced_phoneme(phoneme, expected: str) -> str | None:
     return None
 
 
+def _confident_priority_produced_phoneme(phoneme, expected: str) -> str | None:
+    """Like _confident_produced_phoneme, tuned for th/r feedback.
+
+    Priority sounds are the product focus right now, so a smaller margin is
+    acceptable. The produced sound still has to be a common, readable
+    substitution for that expected sound; otherwise we keep the feedback on the
+    target sound only instead of saying something dubious like "not p" for a
+    messy "three" attempt.
+    """
+    if not phoneme.candidates:
+        return None
+
+    top = phoneme.candidates[0]
+    produced = canonical_phoneme(top.phoneme)
+    if not produced:
+        return None
+    if produced == expected:
+        return expected
+    if produced not in PRIORITY_CONTRAST_PHONEMES.get(expected, frozenset()):
+        return None
+    if is_vowel(expected) != is_vowel(produced):
+        return None
+
+    expected_score = _expected_candidate_score(phoneme, expected)
+    if (
+        top.score >= PRIORITY_PRODUCED_PHONEME_MIN_SCORE
+        and top.score - expected_score >= PRIORITY_PRODUCED_PHONEME_MIN_MARGIN
+    ):
+        return produced
+    return None
+
+
 def _weak_sound_pairs(
     word: WordResult,
     *,
@@ -157,6 +203,69 @@ def _weak_sound_pairs(
     return pairs
 
 
+def _filter_priority_sound_pairs(
+    pairs: list[tuple[str, str | None]]
+) -> list[tuple[str, str | None]]:
+    """Only the product-priority sounds we want to coach first: th and r."""
+    return [
+        pair for pair in pairs
+        if pair[0] in PRIORITY_FEEDBACK_PHONEMES
+    ]
+
+
+def _priority_sound_pairs(word: WordResult) -> list[tuple[str, str | None]]:
+    """Direct detector for priority th/r sounds.
+
+    This intentionally runs before the generic word-score detector. It catches
+    cases where Azure keeps `ErrorType=None` and the word score is acceptable,
+    but the priority phoneme itself or its NBest candidates clearly show trouble.
+    """
+    scored: list[tuple[str, str | None, float]] = []
+    for ph in word.phonemes:
+        expected = canonical_phoneme(ph.phoneme)
+        if expected not in PRIORITY_FEEDBACK_PHONEMES or not has_anchor(expected):
+            continue
+
+        produced = _confident_priority_produced_phoneme(ph, expected)
+        if produced == expected:
+            continue
+
+        if produced and ph.accuracy_score <= PRIORITY_PHONEME_WEAK_THRESHOLD:
+            scored.append((expected, produced, ph.accuracy_score))
+            continue
+
+        if ph.accuracy_score <= PRIORITY_PHONEME_WEAK_THRESHOLD:
+            scored.append((expected, None, ph.accuracy_score))
+
+    scored.sort(key=lambda eps: eps[2])
+    seen: set[str] = set()
+    pairs: list[tuple[str, str | None]] = []
+    for expected, produced, _ in scored:
+        if expected in seen:
+            continue
+        seen.add(expected)
+        pairs.append((expected, produced))
+    return pairs
+
+
+def _has_priority_sound(word: MispronouncedWord) -> bool:
+    return any(ph in PRIORITY_FEEDBACK_PHONEMES for ph in word.weak_phonemes)
+
+
+def _mispronounced_word_from_pairs(
+    word: WordResult,
+    pairs: list[tuple[str, str | None]],
+) -> MispronouncedWord:
+    weak = [expected for expected, _ in pairs]
+    target_only_pairs = [(expected, None) for expected, _ in pairs]
+    return MispronouncedWord(
+        word=word.word,
+        accuracy_score=word.accuracy_score,
+        weak_phonemes=weak,
+        correct_hint=contrast_hint_for(target_only_pairs) if pairs else None,
+    )
+
+
 def _find_mispronounced(words: list[WordResult]) -> list[MispronouncedWord]:
     """Words Azure flagged as mispronounced (or that scored low overall)."""
     result: list[MispronouncedWord] = []
@@ -165,17 +274,17 @@ def _find_mispronounced(words: list[WordResult]) -> list[MispronouncedWord]:
         if word.error_type in ("Omission", "Insertion"):
             continue
 
+        priority_pairs = _priority_sound_pairs(word)
+        if priority_pairs:
+            result.append(_mispronounced_word_from_pairs(word, priority_pairs))
+            continue
+
         if word.error_type == "Mispronunciation":
             pairs = _weak_sound_pairs(word, threshold=PHONEME_WEAK_THRESHOLD)
-            weak = [expected for expected, _ in pairs]
-            result.append(
-                MispronouncedWord(
-                    word=word.word,
-                    accuracy_score=word.accuracy_score,
-                    weak_phonemes=weak,
-                    correct_hint=contrast_hint_for(pairs) if pairs else None,
-                )
-            )
+            result.append(_mispronounced_word_from_pairs(
+                word,
+                _filter_priority_sound_pairs(pairs) or pairs,
+            ))
             continue
 
         if (
@@ -189,16 +298,13 @@ def _find_mispronounced(words: list[WordResult]) -> list[MispronouncedWord]:
             )
             if not pairs:
                 continue
-            weak = [expected for expected, _ in pairs]
-            result.append(
-                MispronouncedWord(
-                    word=word.word,
-                    accuracy_score=word.accuracy_score,
-                    weak_phonemes=weak,
-                    correct_hint=contrast_hint_for(pairs),
-                )
-            )
-    return result
+            result.append(_mispronounced_word_from_pairs(
+                word,
+                _filter_priority_sound_pairs(pairs) or pairs,
+            ))
+
+    priority_result = [word for word in result if _has_priority_sound(word)]
+    return priority_result or result
 
 
 def _split_spelling_errors(

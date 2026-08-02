@@ -68,7 +68,7 @@ def test_mispronounced_word_gets_correct_hint():
     assert flagged.correct_hint == "the 'th' sound like in 'thin'"
 
 
-def test_strong_candidate_evidence_adds_contrast_hint():
+def test_strong_candidate_evidence_keeps_target_only_hint():
     words = [
         WordResult(
             word="three",
@@ -88,10 +88,10 @@ def test_strong_candidate_evidence_adds_contrast_hint():
     ]
     report = analyze("three", make_asr_result("three", accuracy=40, words=words))
     hint = report.mispronounced_words[0].correct_hint
-    assert hint == "the 'th' sound like in 'thin', not the 's' sound"
+    assert hint == "the 'th' sound like in 'thin'"
 
 
-def test_weak_candidate_evidence_keeps_correct_sound_without_contrast():
+def test_weak_candidate_evidence_keeps_target_only_hint():
     words = [
         WordResult(
             word="three",
@@ -112,7 +112,7 @@ def test_weak_candidate_evidence_keeps_correct_sound_without_contrast():
     report = analyze("three", make_asr_result("three", accuracy=55, words=words))
     hint = report.mispronounced_words[0].correct_hint
     assert hint == "the 'th' sound like in 'thin'"
-    assert "not the 's' sound" not in hint
+    assert "not the" not in hint
 
 
 def test_top_candidate_matching_expected_sound_does_not_create_false_hint():
@@ -154,26 +154,187 @@ def test_error_type_none_score_around_82_without_weak_phoneme_is_not_flagged():
     assert not any(p.kind == "mispronunciation" for p in report.feedback_points)
 
 
-def test_error_type_none_low_score_requires_strong_weak_phoneme():
+def test_priority_th_is_flagged_even_when_word_score_is_high():
     words = [
+        WordResult(word="i", accuracy_score=94, error_type="None"),
+        WordResult(word="have", accuracy_score=91, error_type="None"),
         WordResult(
             word="three",
-            accuracy_score=70,
+            accuracy_score=85,
             error_type="None",
-            phonemes=[PhonemeScore(phoneme="th", accuracy_score=70)],
+            phonemes=[
+                PhonemeScore(
+                    phoneme="th",
+                    accuracy_score=59,
+                    candidates=[
+                        PhonemeCandidate(phoneme="p", score=100),
+                        PhonemeCandidate(phoneme="f", score=96),
+                        PhonemeCandidate(phoneme="r", score=60),
+                    ],
+                ),
+                PhonemeScore(
+                    phoneme="r",
+                    accuracy_score=100,
+                    candidates=[PhonemeCandidate(phoneme="r", score=100)],
+                ),
+                PhonemeScore(
+                    phoneme="iy",
+                    accuracy_score=79,
+                    candidates=[PhonemeCandidate(phoneme="iy", score=100)],
+                ),
+            ],
         ),
         WordResult(
-            word="thin",
-            accuracy_score=70,
-            error_type="None",
-            phonemes=[PhonemeScore(phoneme="th", accuracy_score=60)],
+            word="experience",
+            accuracy_score=41,
+            error_type="Mispronunciation",
+            phonemes=[
+                PhonemeScore(
+                    phoneme="s",
+                    accuracy_score=15,
+                    candidates=[PhonemeCandidate(phoneme="n", score=74)],
+                )
+            ],
         ),
     ]
     report = analyze(
-        "three thin",
-        make_asr_result("three thin", accuracy=70, words=words),
+        "I have three years of experience.",
+        make_asr_result("I have three years of experience.", accuracy=83, words=words),
     )
-    assert [word.word for word in report.mispronounced_words] == ["thin"]
+    assert [word.word for word in report.mispronounced_words] == ["three"]
+    assert report.mispronounced_words[0].weak_phonemes == ["th"]
+    assert report.mispronounced_words[0].correct_hint == "the 'th' sound like in 'thin'"
+
+
+def test_priority_th_uses_nbest_even_when_phoneme_score_is_not_low():
+    words = [
+        WordResult(
+            word="three",
+            accuracy_score=90,
+            error_type="None",
+            phonemes=[
+                PhonemeScore(
+                    phoneme="th",
+                    accuracy_score=84,
+                    candidates=[
+                        PhonemeCandidate(phoneme="f", score=100),
+                        PhonemeCandidate(phoneme="th", score=83),
+                    ],
+                ),
+                PhonemeScore(
+                    phoneme="r",
+                    accuracy_score=100,
+                    candidates=[PhonemeCandidate(phoneme="r", score=100)],
+                ),
+            ],
+        )
+    ]
+    report = analyze("three", make_asr_result("three", accuracy=90, words=words))
+    flagged = report.mispronounced_words[0]
+    assert flagged.word == "three"
+    assert flagged.weak_phonemes == ["th"]
+    assert flagged.correct_hint == "the 'th' sound like in 'thin'"
+
+
+def test_priority_voiced_th_uses_nbest_even_when_word_score_is_not_low():
+    words = [
+        WordResult(
+            word="this",
+            accuracy_score=90,
+            error_type="None",
+            phonemes=[
+                PhonemeScore(
+                    phoneme="dh",
+                    accuracy_score=84,
+                    candidates=[
+                        PhonemeCandidate(phoneme="d", score=98),
+                        PhonemeCandidate(phoneme="dh", score=82),
+                    ],
+                )
+            ],
+        )
+    ]
+    report = analyze("this", make_asr_result("this", accuracy=90, words=words))
+    flagged = report.mispronounced_words[0]
+    assert flagged.word == "this"
+    assert flagged.weak_phonemes == ["dh"]
+    assert flagged.correct_hint == "the 'th' sound like in 'this'"
+
+
+def test_priority_th_is_not_flagged_when_expected_candidate_is_clear():
+    words = [
+        WordResult(
+            word="three",
+            accuracy_score=95,
+            error_type="None",
+            phonemes=[
+                PhonemeScore(
+                    phoneme="th",
+                    accuracy_score=86,
+                    candidates=[
+                        PhonemeCandidate(phoneme="th", score=100),
+                        PhonemeCandidate(phoneme="f", score=80),
+                    ],
+                )
+            ],
+        )
+    ]
+    report = analyze("three", make_asr_result("three", accuracy=95, words=words))
+    assert report.mispronounced_words == []
+
+
+def test_priority_r_is_flagged_even_when_word_score_is_not_low():
+    words = [
+        WordResult(
+            word="software",
+            accuracy_score=79,
+            error_type="None",
+            phonemes=[
+                PhonemeScore(
+                    phoneme="s",
+                    accuracy_score=57,
+                    candidates=[PhonemeCandidate(phoneme="s", score=100)],
+                ),
+                PhonemeScore(
+                    phoneme="r",
+                    accuracy_score=32,
+                    candidates=[
+                        PhonemeCandidate(phoneme="ax", score=85),
+                        PhonemeCandidate(phoneme="r", score=71),
+                    ],
+                ),
+            ],
+        )
+    ]
+    report = analyze(
+        "software",
+        make_asr_result("software", accuracy=76, words=words),
+    )
+    assert [word.word for word in report.mispronounced_words] == ["software"]
+    assert report.mispronounced_words[0].weak_phonemes == ["r"]
+    assert report.mispronounced_words[0].correct_hint == "the 'r' sound like in 'red'"
+
+
+def test_error_type_none_low_score_requires_strong_weak_phoneme():
+    words = [
+        WordResult(
+            word="zoo",
+            accuracy_score=70,
+            error_type="None",
+            phonemes=[PhonemeScore(phoneme="z", accuracy_score=70)],
+        ),
+        WordResult(
+            word="zip",
+            accuracy_score=70,
+            error_type="None",
+            phonemes=[PhonemeScore(phoneme="z", accuracy_score=60)],
+        ),
+    ]
+    report = analyze(
+        "zoo zip",
+        make_asr_result("zoo zip", accuracy=70, words=words),
+    )
+    assert [word.word for word in report.mispronounced_words] == ["zip"]
 
 
 def test_error_type_none_boundary_vowel_substitution_is_flagged():
@@ -218,7 +379,7 @@ def test_error_type_none_boundary_vowel_substitution_is_flagged():
     flagged = report.mispronounced_words[0]
     assert flagged.word == "dish"
     assert flagged.weak_phonemes == ["ih"]
-    assert flagged.correct_hint == "the 'i' sound like in 'sit', not the 'e' sound"
+    assert flagged.correct_hint == "the 'i' sound like in 'sit'"
 
 
 def test_low_prosody_alone_does_not_create_tone_feedback():
@@ -284,7 +445,7 @@ def test_weak_phoneme_threshold_catches_lenient_th():
 
 
 def test_weak_phonemes_are_ordered_worst_first():
-    # 'r' is the worst sound but the last phoneme; it must still lead the hint.
+    # 'r' is a priority sound, so it leads and suppresses less important noise.
     words = [
         WordResult(
             word="world",
@@ -300,7 +461,7 @@ def test_weak_phonemes_are_ordered_worst_first():
     ]
     report = analyze("world", make_asr_result("world", accuracy=55, words=words))
     flagged = report.mispronounced_words[0]
-    assert flagged.weak_phonemes == ["r", "l", "w"]  # ascending by score
+    assert flagged.weak_phonemes == ["r"]
     assert flagged.correct_hint.startswith("the 'r' sound like in 'red'")
 
 

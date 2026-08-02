@@ -114,6 +114,14 @@ _PHONEME_ANCHOR_WORDS: dict[str, str] = {
 # learner-friendly, so every anchored vowel needs a display grapheme here.
 _PHONEME_DISPLAY: dict[str, str] = {
     "dh": "th",
+    # Produced-only display labels for simple consonants. These are deliberately
+    # not anchor words, so Stage 1 still cannot coach them as target sounds, but
+    # contrast hints can say "not the 'f' sound" when Azure strongly reports it.
+    "b": "b",
+    "d": "d",
+    "f": "f",
+    "p": "p",
+    "t": "t",
     "iy": "ee",
     "ih": "i",
     "eh": "e",
