@@ -250,6 +250,35 @@ def _polish_covered(text: str, detail: str) -> bool:
     return "to make it perfect" in lower or detail.lower() in lower
 
 
+def _missing_required_coverage(text: str, report: ErrorReport) -> bool:
+    """True when model output skipped concrete report content.
+
+    For mispronunciation hints, word coverage alone is not enough: the model
+    must include the exact `correct_hint`, otherwise it can mention the word
+    while inventing unrelated advice.
+    """
+    lower = text.lower()
+    if re.search(r"\bnot\s+the\s+'[^']+'\s+sound\b", lower):
+        return True
+    for point in report.feedback_points:
+        if point.kind in ("praise", "fluency", "pattern"):
+            continue
+        if point.kind == "polish":
+            if point.detail and not _polish_covered(text, point.detail):
+                return True
+            continue
+        if point.word and not _word_in_text(text, point.word):
+            return True
+        if point.kind in ("mispronunciation", "silent_letter", "hard_soft_c", "cluster"):
+            if point.detail and point.detail.lower() not in lower:
+                return True
+
+    for sub in report.substitutions:
+        if sub.sound_hint and sub.sound_hint.lower() not in lower:
+            return True
+    return False
+
+
 def _ensure_coverage(text: str, report: ErrorReport) -> str:
     """Append template-rendered sentences for any feedback point the model
     failed to name. Coverage is judged by whether the point's `word` (or,
@@ -324,6 +353,8 @@ def generate_feedback(report: ErrorReport) -> str:
         # if it's clean but the final text isn't, it's _ensure_coverage.
         print(f"[FB DEBUG] raw model = {text!r}")
         if not text:
+            return _ensure_coverage(templates.render_feedback(report), report)
+        if _missing_required_coverage(text, report):
             return _ensure_coverage(templates.render_feedback(report), report)
         return _ensure_coverage(text, report)
     except Exception:

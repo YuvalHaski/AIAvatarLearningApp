@@ -1,5 +1,7 @@
+from typing import List
 from pydantic import BaseModel, ConfigDict
 from app.models.domain import DifficultyEnum, ProgressStatusEnum
+from app.schemas.badge import BadgeResponse
 
 # ==========================================
 # LESSON SCHEMAS
@@ -87,3 +89,4 @@ class LessonCompleteResponse(BaseModel):
     status: ProgressStatusEnum
     average_score: int
     feedback_text: str
+    new_badges: List[BadgeResponse] = []

@@ -9,9 +9,10 @@ aren't phoneme-level and need spelling / orthography coaching instead:
   3. Difficult consonant clusters (`str`, `spr`, `thr`) that get vowel-inserted
      or simplified
 
-Azure Pronunciation Assessment scores phonemes, not spelling rules, so we
-detect these by combining "Azure flagged this word" with "this word is in the
-relevant curated table."
+Azure Pronunciation Assessment scores phonemes, not spelling rules. These
+tables describe possible coaching hints, but runtime analysis should only emit
+them when it has explicit evidence for that spelling-rule mistake. Table
+membership alone is not enough.
 
 A fourth class this module handles is *word-level substitutions*. When a
 learner mispronounces a word badly enough, Azure returns the closest real

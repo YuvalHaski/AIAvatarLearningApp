@@ -43,6 +43,9 @@ class Category(Base):
     title = Column(String, nullable=False)
     description = Column(String)
     icon = Column(String)
+    # Stable machine identifier (e.g. "travel_abroad") used by badge rule logic,
+    # decoupled from the display `title` so copy/localization changes never break earning logic.
+    category_code = Column(String, unique=True, nullable=False, index=True)
 
     # Relationship to Lessons
     lessons = relationship("Lesson", back_populates="category", cascade="all, delete-orphan")
@@ -80,8 +83,10 @@ class Badge(Base):
     id = Column(String, primary_key=True, index=True)
     title = Column(String, nullable=False)
     description = Column(String)
-    icon = Column(String)
     order_index = Column(Integer, nullable=False)
+    # Stable machine identifier (e.g. "perfect_score") used by the badge rule engine,
+    # decoupled from the display `title` so copy/localization changes never break earning logic.
+    badge_code = Column(String, unique=True, nullable=False, index=True)
 
 
 # ==========================================
@@ -129,3 +134,6 @@ class UserBadge(Base):
     user_id = Column(String, ForeignKey("users.id"), primary_key=True)
     badge_id = Column(String, ForeignKey("badges.id"), primary_key=True)
     achieved_at = Column(DateTime(timezone=True), server_default=func.now())
+    # False until the client has acknowledged/shown the "badge earned" celebration,
+    # via GET /progress/badges/unseen + POST /progress/badges/seen.
+    is_seen = Column(Boolean, nullable=False, server_default="false")

@@ -12,6 +12,7 @@ from app.models.domain import Category, Lesson, Sentence, DifficultyEnum, Badge
 INITIAL_DATA = [
     {
         "title": "Job Interview",
+        "code": "job_interview",
         "description": "Practical interview phrases to help you start conversations, summarize your work experience, and discuss salary and benefits with confidence.",
         "icon": "",
         "lessons": [
@@ -52,6 +53,7 @@ INITIAL_DATA = [
     },
     {
         "title": "Travel Abroad",
+        "code": "travel_abroad",
         "description": "Key travel phrases for airports, hotels, bookings, and getting around, so travelers can handle check-in, customs, reservations, and directions with confidence.",
         "icon": "",
         "lessons": [
@@ -114,6 +116,7 @@ INITIAL_DATA = [
     },
     {
         "title": "Emergencies & Safety",
+        "code": "emergencies_safety",
         "description": "Essential, easy-to-use phrases for urgent situations: call contacts and emergency services, describe medical problems, report theft, and follow fire evacuation instructions.",
         "icon": "",
         "lessons": [
@@ -175,6 +178,7 @@ INITIAL_DATA = [
     },
     {
         "title": "Small Talk & Socializing",
+        "code": "small_talk_socializing",
         "description": "Friendly phrases for meeting people, chatting about everyday life, and making casual plans.",
         "icon": "",
         "lessons": [
@@ -237,6 +241,7 @@ INITIAL_DATA = [
     },
     {
         "title": "Dining & Ordering Food",
+        "code": "dining_ordering_food",
         "description": "Common restaurant and food phrases for ordering, asking about dishes, handling dietary needs, takeout, and paying; useful in cafes, restaurants, and food stalls.",
         "icon": "",
         "lessons": [
@@ -299,6 +304,7 @@ INITIAL_DATA = [
     },
     {
         "title": "Idioms & Everyday Expressions",
+        "code": "idioms_expressions",
         "description": "Useful idioms and everyday phrases to sound more natural, understand common expressions, and respond clearly in daily conversations.",
         "icon": "",
         "lessons": [
@@ -339,6 +345,7 @@ INITIAL_DATA = [
     },
     {
         "title": "Tech Support",
+        "code": "tech_support",
         "description": "Practical phrases to describe problems, manage accounts, install or update software, and perform remote diagnostics.",
         "icon": "",
         "lessons": [
@@ -390,6 +397,7 @@ INITIAL_DATA = [
     },
     {
         "title": "Public Transport",
+        "code": "public_transport",
         "description": "Practical phrases for using buses, trains and metros: buy tickets, check routes and schedules, ask for directions or assistance, and handle delays or safety issues.",
         "icon": "",
         "lessons": [
@@ -482,92 +490,92 @@ INITIAL_DATA = [
 INITIAL_BADGES = [
     {
         "title": "First Step",
+        "code": "first_step",
         "description": "Completed your very first lesson.",
-        "icon": "",
         "order_index": 10
     },
     {
         "title": "Perfect Score",
+        "code": "perfect_score",
         "description": "Completed a lesson with 100% accuracy.",
-        "icon": "",
         "order_index": 20
     },
     {
         "title": "Conversation Starter",
+        "code": "conversation_starter",
         "description": "Complete 5 Lessons.",
-        "icon": "",
         "order_index": 30
     },
     {
         "title": "Lesson Collector",
+        "code": "lesson_collector",
         "description": "Finish 10 different lessons.",
-        "icon": "",
         "order_index": 40
     },
     {
         "title": "7 Day Streak",
+        "code": "streak_7_day",
         "description": "Practice at least one lesson for 7 consecutive days.",
-        "icon": "",
         "order_index": 50
     },
     {
         "title": "Early Bird",
+        "code": "early_bird",
         "description": "Practice between 6 AM and 8 AM once.",
-        "icon": "",
         "order_index": 60
     },
     {
         "title": "Night Owl",
+        "code": "night_owl",
         "description": "Practice between midnight and 4 AM once.",
-        "icon": "",
         "order_index": 70
     },
     {
         "title": "Traveler",
+        "code": "category_complete_travel_abroad",
         "description": "Complete all lessons in Travel Abroad category.",
-        "icon": "",
         "order_index": 80
     },
     {
         "title": "Foodie",
+        "code": "category_complete_dining_ordering_food",
         "description": "Complete all Dining & Ordering Food lessons.",
-        "icon": "",
         "order_index": 90
     },
     {
         "title": "Transport Expert",
+        "code": "category_complete_public_transport",
         "description": "Complete all Public Transport lessons.",
-        "icon": "",
         "order_index": 100
     },
     {
         "title": "Techie",
+        "code": "category_complete_tech_support",
         "description": "Complete all Tech Support lessons.",
-        "icon": "",
         "order_index": 110
     },
     {
         "title": "Social Butterfly",
+        "code": "category_complete_small_talk_socializing",
         "description": "Complete all Small Talk & Socializing lessons.",
-        "icon": "",
         "order_index": 120
     },
     {
         "title": "Badge Collector",
+        "code": "badge_collector",
         "description": "Earn 10 different badges.",
-        "icon": "",
         "order_index": 130
     },
     {
         "title": "30 Day Streak",
+        "code": "streak_30_day",
         "description": "Practice at least one lesson for 30 consecutive days.",
-        "icon": "",
         "order_index": 140
     },
     {
         "title": "Mastery",
+        "code": "mastery",
         "description": "Complete every lesson in the app.",
-        "icon": "",
         "order_index": 150
     }
 ]
@@ -591,6 +599,7 @@ def seed_database():
                 new_category = Category(
                     id=category_id,
                     title=cat_data["title"],
+                    category_code=cat_data["code"],
                     description=cat_data["description"],
                     icon=cat_data["icon"]
                 )
@@ -627,8 +636,8 @@ def seed_database():
                 new_badge = Badge(
                     id=str(uuid.uuid4()),
                     title=badge_data["title"],
+                    badge_code=badge_data["code"],
                     description=badge_data["description"],
-                    icon=badge_data["icon"],
                     order_index=badge_data["order_index"]
                 )
                 db.add(new_badge)
