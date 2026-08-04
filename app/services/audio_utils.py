@@ -3,7 +3,10 @@
 Uses imageio-ffmpeg to run a direct conversion from M4A to 16kHz Mono 16-bit PCM WAV.
 Bypasses pydub entirely to avoid ffprobe dependencies.
 """
+import os
 import subprocess
+import tempfile
+
 import imageio_ffmpeg
 
 # Azure Pronunciation Assessment expects this exact PCM shape.
@@ -38,6 +41,13 @@ def resolve_locale(language: str | None) -> str:
 _LEAD_SILENCE_SEC = "0.3"
 _TRAIL_SILENCE_SEC = "0.8"
 
+# Sanity check on the decoded result. 16 kHz * 2 bytes per 16-bit sample.
+_BYTES_PER_SEC = 16000 * 2
+_WAV_HEADER_BYTES = 78
+_PADDING_BYTES = int((float(_LEAD_SILENCE_SEC) + float(_TRAIL_SILENCE_SEC)) * _BYTES_PER_SEC)
+# Shorter than this and there is no utterance worth assessing (0.25 s).
+_MIN_SPEECH_BYTES = int(0.25 * _BYTES_PER_SEC)
+
 
 def normalize_to_wav(audio_bytes: bytes) -> bytes:
     """Decode audio and re-encode as 16 kHz mono 16-bit PCM WAV using direct FFmpeg.
@@ -54,10 +64,18 @@ def normalize_to_wav(audio_bytes: bytes) -> bytes:
         f"apad=pad_dur={_TRAIL_SILENCE_SEC}"
     )
 
-    # Build the direct FFmpeg command
+    # The input MUST be a real file, not stdin. M4A/MP4 keeps its index (the
+    # `moov` atom) at the end of the file, so a demuxer reading a non-seekable
+    # pipe cannot find it: ffmpeg logs "Error during demuxing" but still exits
+    # 0, and emits a WAV containing nothing but the padding above. Azure then
+    # sees silence and marks every word as an omission, scoring the attempt 0.
+    with tempfile.NamedTemporaryFile(suffix=".m4a", delete=False) as tmp:
+        tmp.write(audio_bytes)
+        tmp_path = tmp.name
+
     command = [
         ffmpeg_exe,
-        "-i", "pipe:0",           # Read input from stdin
+        "-i", tmp_path,           # Seekable input, so MP4 demuxing works
         "-af", pad_filter,        # Pad silence on both ends for clean segmentation
         "-f", "wav",              # Force output format to WAV
         "-acodec", "pcm_s16le",   # Audio codec: 16-bit PCM
@@ -67,16 +85,27 @@ def normalize_to_wav(audio_bytes: bytes) -> bytes:
     ]
 
     try:
-        # Run ffmpeg, feed the m4a bytes to stdin, get wav bytes from stdout
         process = subprocess.run(
-            command,
-            input=audio_bytes,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=True
+            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True
         )
-        return process.stdout
     except subprocess.CalledProcessError as exc:
-        # If ffmpeg fails, print its error log
         error_msg = exc.stderr.decode(errors="ignore")
         raise ValueError(f"FFmpeg conversion failed: {error_msg}")
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+    wav = process.stdout
+    # ffmpeg can exit 0 while producing only the padding (see above), so verify
+    # that actual speech survived instead of sending silence to Azure.
+    speech_bytes = len(wav) - _WAV_HEADER_BYTES - _PADDING_BYTES
+    if speech_bytes < _MIN_SPEECH_BYTES:
+        detail = process.stderr.decode(errors="ignore").strip().splitlines()
+        reason = detail[-1] if detail else "no decoder output"
+        raise ValueError(
+            f"Audio decoded to little or no speech ({max(speech_bytes, 0)} bytes). "
+            f"ffmpeg: {reason}"
+        )
+    return wav
