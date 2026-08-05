@@ -22,7 +22,6 @@ The Android client lives in a separate repository: **[Lioravraham5/LearningApp](
 8. [Data model](#8-data-model)
 9. [Testing](#9-testing)
 10. [Model training pipeline](#10-model-training-pipeline)
-11. [Known limitations](#11-known-limitations)
 
 ---
 
@@ -414,17 +413,3 @@ python training/evaluate.py --endpoint http://localhost:8000/v1 --bertscore
 [`training/train_in_colab.ipynb`](training/train_in_colab.ipynb) runs the same fine-tune on a Colab
 GPU for those without local hardware.
 
----
-
-## 11. Known limitations
-
-* **Time-based badge rules operate in UTC** — streaks and the Early Bird / Night Owl windows may be
-  off for learners in other timezones ([`badge_rules.py`](app/services/badge_rules.py#L1-L13)).
-* **Spelling-rule error buckets stay empty at runtime.** The silent-letter, hard/soft-C and cluster
-  tables exist and are used by the training generator, but Stage 1 only emits them given explicit
-  evidence, which the current ASR output does not provide — so they are reported as ordinary
-  mispronunciations ([`analysis.py`](app/services/feedback/analysis.py#L310-L326)).
-* **`daily_streak` in `/progress/overview` returns a placeholder `0`**; the badge engine computes
-  real streaks separately from attempt history.
-* **CORS is fully open and ASR debug printing is enabled** — appropriate for this local development
-  setup, not for public hosting.
